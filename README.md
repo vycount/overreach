@@ -1,6 +1,6 @@
-# Tick Fighter simulator
+# OverReach simulator
 
-The Tick Fighter prototype: the tick engine, box fighters, and an AI to play against.
+The OverReach prototype: the tick engine, box fighters, and an AI to play against.
 The rules follow the design doc. All the tuning numbers are placeholders, and the point
 of this project is to change them and see what happens.
 

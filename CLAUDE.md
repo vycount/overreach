@@ -1,8 +1,9 @@
-# Tick Fighter simulator
+# OverReach simulator
 
-Prototype for **Tick Fighter**, a chess-like, tick-based fighting game. Both players commit
+Prototype for **OverReach**, a chess-like, tick-based fighting game. Both players commit
 actions at the same time each tick; everything already committed is public. This repo holds
 the rules engine (no graphics), AI opponents, a batch simulator, and a box viewer for playing it.
+The title is spelled **OverReach**, with a capital R, in all player-facing text.
 
 The design doc lives at https://claude.ai/code/artifact/8791b292-88d6-44ab-95b2-8e01e7017338
 (the owner can open it; it isn't readable from here). The rules that matter for code are summarised
@@ -74,4 +75,4 @@ Node 20+. No other runtime dependencies.
 - Timer and thinking-bank values for each match mode.
 - How many objects one player can have in flight at once.
 - How strong summons should be. Simulations show them dominating; upkeep is the current lever.
-- Art direction and the final title.
+- Art direction.

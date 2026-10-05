@@ -8,7 +8,7 @@ import { runMatch, type MatchResult } from '../sim/match.ts';
 import type { GameData } from '../sim/types.ts';
 
 const HELP = `
-Tick Fighter batch simulator
+OverReach batch simulator
 
   npm run sim -- [options]
 

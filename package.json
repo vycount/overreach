@@ -1,7 +1,7 @@
 {
-  "name": "tick-fighter-sim",
+  "name": "overreach-sim",
   "version": "0.2.0",
-  "description": "Headless simulator and box viewer for the Tick Fighter prototype",
+  "description": "Headless simulator and box viewer for the OverReach prototype",
   "scripts": {
     "dev": "esbuild src/browser.ts --bundle --format=iife --global-name=TickSim --outfile=viewer/sim.bundle.js --servedir=viewer --serve=8000 --watch=forever",
     "sim": "tsx src/cli/batch.ts",
