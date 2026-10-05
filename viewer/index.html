@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tick Fighter Sim</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one column. Controls, arena, every unit on the board, then your commit (one tab per unit you command) beside what's coming at you and the event log. */
+:root{
+  --bg:#EDF1F4; --surface:#FFFFFF; --surface-2:#F4F7F9; --ink:#12232F; --muted:#556877; --line:#D3DDE4; --grid:#E2E9EE;
+  --p1:#C14F17; --p2:#1C5FAF; --danger:#C2253A; --ok:#2C7A4B; --on-accent:#FFFFFF; --stone:#7A848C;
+  --font-ui:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0E151B; --surface:#152029; --surface-2:#1B2833; --ink:#E1E9EF; --muted:#93A5B3; --line:#2A3946; --grid:#1F2D38;
+    --p1:#F0803F; --p2:#5E9DEB; --danger:#F06372; --ok:#5CC08A; --on-accent:#0E151B; --stone:#A7B0B8;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0E151B; --surface:#152029; --surface-2:#1B2833; --ink:#E1E9EF; --muted:#93A5B3; --line:#2A3946; --grid:#1F2D38;
+  --p1:#F0803F; --p2:#5E9DEB; --danger:#F06372; --ok:#5CC08A; --on-accent:#0E151B; --stone:#A7B0B8;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--font-ui);font-size:15px;line-height:1.45;margin:0;padding-inline:16px;padding-block:20px 48px}
+.wrap{max-width:1120px;margin:0 auto;display:grid;gap:14px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 16px}
+h1{font-size:22px;font-weight:600;margin:0;letter-spacing:.01em}
+h1 span{font-family:var(--font-mono);font-weight:500;color:var(--muted);font-size:14px;margin-left:8px}
+.sub{margin:0;color:var(--muted);font-size:14px;max-width:72ch}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;min-width:0}
+.controls{display:flex;flex-wrap:wrap;align-items:end;gap:10px 14px;padding:12px 14px}
+.field{display:grid;gap:3px;font-size:12px;color:var(--muted)}
+select,input[type=number]{font:inherit;font-size:14px;color:var(--ink);background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:6px 8px;min-height:36px}
+input[type=number]{width:84px}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.seg button{font:inherit;font-size:14px;border:0;background:var(--surface-2);color:var(--ink);padding:7px 12px;cursor:pointer;min-height:36px}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.btn{font:inherit;font-size:14px;font-weight:500;border:1px solid var(--line);background:var(--surface-2);color:var(--ink);border-radius:7px;padding:7px 14px;cursor:pointer;min-height:36px}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,select:focus-visible,input:focus-visible,label.file:focus-within{outline:2px solid var(--p2);outline-offset:2px}
+label.file{position:relative;overflow:hidden}
+label.file input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.spacer{flex:1}
+.arena svg{display:block;width:100%;height:auto}
+.arena-top{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 14px 0;flex-wrap:wrap}
+.tick{font-family:var(--font-mono);font-size:13px;color:var(--muted)}
+.tick b{font-size:22px;color:var(--ink);font-weight:600;margin-left:4px;font-variant-numeric:tabular-nums}
+.banner{font-weight:600;font-size:15px;padding:4px 10px;border-radius:6px;background:var(--ink);color:var(--bg)}
+.transport{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:0 14px 12px}
+.transport input[type=range]{flex:1;min-width:160px;accent-color:var(--ink)}
+.units{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:14px}
+.fp{padding:12px 14px;display:grid;gap:8px;align-content:start}
+.fp.summon{border-style:dashed}
+.fp-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}
+.fp-name{font-weight:600;font-size:16px;display:flex;align-items:center;gap:8px}
+.fp-role{font-size:12px;color:var(--muted);margin-top:-6px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--c)}
+.fp-tags{display:flex;gap:6px;flex-wrap:wrap}
+.tag{font-size:12px;font-family:var(--font-mono);border:1px solid var(--line);border-radius:999px;padding:1px 8px;color:var(--muted)}
+.tag.warn{border-color:var(--danger);color:var(--danger)}
+.bar{height:10px;background:var(--surface-2);border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--c)}
+.meta{display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:12px;color:var(--muted);gap:8px;flex-wrap:wrap}
+.pips{display:flex;gap:3px;align-items:center;flex-wrap:wrap}
+.pips i{width:12px;height:12px;border-radius:3px;border:1px solid var(--c)}
+.pips i.on{background:var(--c)}
+.acts{display:grid;gap:5px}
+.act{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;align-items:center;font-size:13px}
+.act .nm{font-weight:500}
+.act .st{font-family:var(--font-mono);font-size:12px;color:var(--muted);text-align:right}
+.cells{grid-column:1 / -1;display:flex;gap:2px;flex-wrap:wrap}
+.cells i{width:12px;height:8px;border-radius:2px;border:1px solid var(--c)}
+.cells i.w{background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--c) 45%,transparent) 0 2px,transparent 2px 4px)}
+.cells i.a{background:var(--c)}
+.cells i.r{border-style:dashed}
+.cells i.done{opacity:.3}
+.cells i.now{outline:2px solid var(--ink);outline-offset:1px}
+.empty{font-size:13px;color:var(--muted);margin:0}
+.lower{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:14px}
+@media (max-width:820px){.lower{grid-template-columns:minmax(0,1fr)}}
+.panel{padding:12px 14px;display:grid;gap:10px;align-content:start}
+.panel h2{font-size:14px;font-weight:600;margin:0;display:flex;justify-content:space-between;gap:8px;align-items:baseline;flex-wrap:wrap}
+.panel h2 small{font-family:var(--font-mono);font-weight:400;color:var(--muted);font-size:12px}
+.tabs{display:flex;flex-wrap:wrap;gap:6px}
+.tab{font:inherit;font-size:13px;text-align:left;border:1px solid var(--line);background:var(--surface-2);color:var(--ink);border-radius:8px;padding:6px 10px;cursor:pointer;display:grid;gap:1px;min-height:44px;border-left:4px solid var(--c)}
+.tab small{font-family:var(--font-mono);font-size:11px;color:var(--muted)}
+.tab[aria-selected="true"]{background:var(--surface);border-color:var(--ink);border-left-color:var(--c);box-shadow:inset 0 0 0 1px var(--ink)}
+.auto{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.auto input{width:18px;height:18px;accent-color:var(--ink)}
+.groups{display:grid;gap:10px}
+.group{display:grid;gap:5px}
+.group-name{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.moves{display:flex;flex-wrap:wrap;gap:6px}
+.mv{font:inherit;font-size:13px;text-align:left;border:1px solid var(--line);background:var(--surface-2);color:var(--ink);border-radius:7px;padding:5px 9px;cursor:pointer;display:grid;gap:1px;min-height:44px;min-width:92px}
+.mv small{font-family:var(--font-mono);font-size:11px;color:var(--muted)}
+.mv[aria-pressed="true"]{background:var(--c);border-color:var(--c);color:var(--on-accent)}
+.mv[aria-pressed="true"] small{color:var(--on-accent)}
+.mv:disabled{opacity:.4;cursor:not-allowed}
+.desc{font-size:13px;background:var(--surface-2);border:1px solid var(--line);border-radius:7px;padding:8px 10px;min-height:52px}
+.desc b{display:block;font-weight:600}
+.desc span{color:var(--muted)}
+.summary{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;border-top:1px solid var(--line);padding-top:10px}
+.summary p{margin:0;font-size:13px;color:var(--muted);flex:1 1 220px}
+.summary .btns{display:flex;gap:8px;flex-wrap:wrap}
+.handover{display:grid;gap:10px;justify-items:start;padding:18px;border:1px dashed var(--line);border-radius:8px;background:var(--surface-2)}
+.handover p{margin:0}
+.threat{border:1px solid var(--line);border-radius:7px;padding:8px 10px;display:grid;gap:2px;font-size:13px;background:var(--surface-2)}
+.threat.hot{border-color:var(--danger)}
+.threat b{font-weight:600}
+.threat .ln{font-family:var(--font-mono);font-size:12px;color:var(--muted)}
+.log{display:grid;gap:3px;max-height:300px;overflow:auto;font-size:13px;margin:0;padding:0;list-style:none}
+.log li{display:grid;grid-template-columns:44px minmax(0,1fr);gap:8px}
+.log .t{font-family:var(--font-mono);font-size:12px;color:var(--muted)}
+.log .minor{color:var(--muted)}
+.commits{font-family:var(--font-mono);font-size:12px;color:var(--muted);padding:0 14px 10px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Tick Fighter Sim <span>prototype 0.2</span></h1>
+    <p class="sub">Box fighters running the real rules. Every unit you command (your fighter, a lion, a clone) gets its own commit each tick, and they all act at once. Take as long as you like: nothing happens until you commit.</p>
+  </header>
+
+  <section class="card controls" aria-label="Match setup">
+    <div class="field">Mode
+      <div class="seg" role="group" aria-label="Mode">
+        <button id="modePlay" aria-pressed="true">Play vs AI</button>
+        <button id="modeHot" aria-pressed="false">Two players</button>
+        <button id="modeWatch" aria-pressed="false">Watch AI vs AI</button>
+      </div>
+    </div>
+    <label class="field" for="charA"><span id="charALabel">You</span><select id="charA"></select></label>
+    <label class="field" for="charB"><span id="charBLabel">Opponent</span><select id="charB"></select></label>
+    <label class="field" for="aiKind" id="aiField">AI<select id="aiKind"></select></label>
+    <label class="field" for="seed">Seed<input id="seed" type="number" value="1" min="0" step="1"></label>
+    <div class="spacer"></div>
+    <label class="btn file" title="Open a replay saved with npm run sim -- --replay file.json">Open replay<input id="loadReplay" type="file" accept=".json,application/json"></label>
+    <button class="btn primary" id="newMatch">New match</button>
+  </section>
+
+  <section class="card arena" aria-label="Arena">
+    <div class="arena-top">
+      <div class="tick">TICK<b id="tickNum">0</b></div>
+      <div id="banner" class="banner hidden"></div>
+    </div>
+    <svg id="stage" viewBox="0 0 1000 300" role="img" aria-label="Arena"></svg>
+    <div class="commits" id="commitLine"></div>
+    <div class="transport hidden" id="transport">
+      <button class="btn" id="tFirst">First</button>
+      <button class="btn" id="tPrev">Back</button>
+      <button class="btn primary" id="tPlay">Play</button>
+      <button class="btn" id="tNext">Next</button>
+      <input type="range" id="scrub" min="0" max="0" value="0" aria-label="Scrub through the match">
+    </div>
+  </section>
+
+  <section class="units" id="units" aria-label="Units on the board"></section>
+
+  <section class="lower">
+    <div class="card panel" id="movePanel">
+      <h2><span id="moveTitle">Your commit for the next tick</span><small id="apLine"></small></h2>
+      <div id="handover" class="handover hidden">
+        <p id="handoverText"></p>
+        <button class="btn primary" id="handoverBtn">Show my units</button>
+      </div>
+      <div id="picker">
+        <div class="tabs" id="unitTabs" role="tablist" aria-label="Units you command"></div>
+        <label class="auto hidden" id="autoWrap" for="autoBox"><input type="checkbox" id="autoBox"> <span id="autoText">Let the AI command this unit</span></label>
+        <div class="groups" id="moveGroups"></div>
+        <div class="desc" id="desc" aria-live="polite"></div>
+      </div>
+      <div class="summary">
+        <p id="selLine"></p>
+        <div class="btns">
+          <button class="btn" id="hintBtn" title="Fill in what the reader AI would do for this unit">Suggest</button>
+          <button class="btn" id="undoBtn" title="Take back the last tick">Undo</button>
+          <button class="btn" id="skipBtn">Skip to my turn</button>
+          <button class="btn primary" id="commitBtn">Commit</button>
+        </div>
+      </div>
+    </div>
+    <div class="card panel">
+      <h2 id="threatTitle">Coming at you</h2>
+      <div id="threats" class="groups"></div>
+      <h2>Events</h2>
+      <ul class="log" id="log"></ul>
+    </div>
+  </section>
+</div>
+
+<script src="sim.bundle.js"></script>
+<script>
+(function(){
+const S = window.TickSim;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const G = 262;
+const GROUP_OF = { summon:'Specials', throw:'Specials', strike:'Strikes', grab:'Strikes', block:'Defence', parry:'Defence', move:'Movement', posture:'Posture' };
+const GROUP_ORDER = ['Specials','Strikes','Defence','Movement','Posture'];
+const TEAM_COLOR = ['var(--p1)','var(--p2)'];
+
+const app = {
+  mode: 'play', data: S.cloneData(), chars: ['beastmaster','fighter'], ai: 'reader', seed: 1,
+  state: null, ctrl: null, helper: null, history: [], log: [], lastCommits: {},
+  sel: {}, cancels: {}, auto: {}, active: null, descFor: null,
+  turn: 0, pending: null, handover: false,
+  frames: null, idx: 0, timer: null, replay: null, names: {},
+};
+
+// ---------------------------------------------------------------- names
+
+const TEAM_NAMES = {
+  play: [['You','Your'], ['AI',"AI's"]],
+  hot: [['Player 1',"Player 1's"], ['Player 2',"Player 2's"]],
+  watch: [['A',"A's"], ['B',"B's"]],
+};
+function remember(state){ for (const u of state.units) app.names[u.id] = { team: u.team, leader: u.leader, name: u.name, kind: u.kind }; }
+function label(id){
+  const n = app.names[id];
+  if (!n) return id;
+  if (n.kind === 'object') return n.name;
+  const [who, whose] = TEAM_NAMES[app.mode][n.team];
+  return n.leader ? who : `${whose} ${n.name.toLowerCase()}`;
+}
+
+// ---------------------------------------------------------------- setup
+
+function fillSelects(){
+  const chars = Object.keys(app.data.characters).filter((c) => !app.data.characters[c].summonOnly);
+  for (const id of ['charA','charB']) $(id).innerHTML = chars.map((c) => `<option value="${c}">${esc(app.data.characters[c].name)}</option>`).join('');
+  $('charA').value = app.chars[0]; $('charB').value = app.chars[1];
+  $('aiKind').innerHTML = S.AI_KINDS.map((k) => `<option value="${k}">${k === 'reader' ? 'Reader (reads the board)' : k === 'random' ? 'Random' : 'Idle (does nothing)'}</option>`).join('');
+  $('aiKind').value = app.ai;
+}
+
+function resetTurnState(){
+  app.sel = {}; app.cancels = {}; app.turn = 0; app.pending = null; app.handover = app.mode === 'hot';
+}
+
+function newMatch(){
+  stopPlay();
+  app.chars = [$('charA').value, $('charB').value];
+  app.ai = $('aiKind').value;
+  app.seed = Number($('seed').value) || 0;
+  app.log = []; app.lastCommits = {}; app.history = []; app.auto = {}; app.names = {};
+  resetTurnState();
+  if (!app.replay) app.data = S.cloneData();
+  if (app.mode === 'watch') {
+    if (!app.replay) {
+      const r = S.runMatch({ chars: app.chars, controllers: [S.makeController(app.ai, app.seed * 2 + 1), S.makeController(app.ai, app.seed * 2 + 2)], data: app.data, record: true });
+      app.frames = r.frames; app.idx = 0;
+    }
+    for (const f of app.frames) remember(f.state);
+  } else {
+    app.state = S.createMatch(app.chars[0], app.chars[1], app.data);
+    app.ctrl = S.makeController(app.ai, app.seed);
+    app.helper = S.makeController('reader', app.seed + 1000);
+    remember(app.state);
+    app.active = 'A';
+  }
+  render();
+}
+
+function setMode(mode){
+  app.mode = mode;
+  app.replay = null;
+  for (const [id, m] of [['modePlay','play'],['modeHot','hot'],['modeWatch','watch']]) $(id).setAttribute('aria-pressed', String(mode === m));
+  newMatch();
+}
+
+// ---------------------------------------------------------------- commanding units
+
+function commandingTeam(){ return app.mode === 'hot' ? app.turn : 0; }
+function myUnits(){ return S.teamUnits(app.state, commandingTeam()); }
+function freeUnits(team){ return S.teamUnits(app.state, team).filter((u) => S.canAct(app.state, u)); }
+
+/** Remaining channels and points for one unit after what's already picked for it. */
+function plan(unitId){
+  const s = app.state, u = S.unitById(s, unitId);
+  const busy = S.busyChannels(u, app.data);
+  let ap = S.apAvailable(u, app.data, s);
+  for (const id of app.sel[unitId] || []) {
+    for (const c of app.data.actions[id].channels) busy.add(c);
+    ap -= app.data.actions[id].ap;
+  }
+  return { busy, ap };
+}
+
+function teamCommits(team){
+  const out = {};
+  for (const u of S.teamUnits(app.state, team)) {
+    if (!S.canAct(app.state, u)) continue;
+    let c;
+    if (app.auto[u.id]) c = app.helper.decideUnit(app.state, u.id, app.data);
+    else c = [...(app.cancels[u.id] || []).map((uid) => ({ type: 'cancel', uid })), ...(app.sel[u.id] || []).map((action) => ({ type: 'start', action }))];
+    if (c.length) out[u.id] = c;
+  }
+  return out;
+}
+
+function doStep(commits){
+  const s = app.state;
+  if (s.over) return;
+  app.history.push({ state: s, log: app.log, lastCommits: app.lastCommits });
+  if (app.history.length > 300) app.history.shift();
+  const res = S.step(s, commits, app.data);
+  app.lastCommits = commits;
+  app.state = res.state;
+  remember(app.state);
+  app.log = res.events.slice().reverse().concat(app.log).slice(0, 300);
+  app.sel = {}; app.cancels = {};
+  if (!S.unitById(app.state, app.active)) app.active = app.mode === 'hot' && app.turn === 1 ? 'B' : 'A';
+}
+
+function commitPressed(){
+  if (app.mode === 'play') {
+    doStep({ ...teamCommits(0), ...app.ctrl.decide(app.state, 1, app.data) });
+  } else if (app.turn === 0) {
+    app.pending = teamCommits(0);
+    app.sel = {}; app.cancels = {};
+    app.turn = 1;
+    app.active = 'B';
+    if (!freeUnits(1).length) return finishHotTick();
+    app.handover = true;
+  } else {
+    finishHotTick();
+    return;
+  }
+  render();
+}
+
+function finishHotTick(){
+  const commits = { ...(app.pending || {}), ...teamCommits(1) };
+  app.pending = null;
+  app.turn = 0;
+  app.active = 'A';
+  doStep(commits);
+  // If player 1 can't act at all this tick, go straight to player 2.
+  if (!app.state.over && !freeUnits(0).length) {
+    app.pending = {};
+    app.turn = 1;
+    app.active = 'B';
+    if (!freeUnits(1).length) return finishHotTick();
+  }
+  app.handover = !app.state.over;
+  render();
+}
+
+function undo(){
+  const last = app.history.pop();
+  if (!last) return;
+  app.state = last.state; app.log = last.log; app.lastCommits = last.lastCommits;
+  resetTurnState();
+  app.active = 'A';
+  render();
+}
+
+function skipToTurn(){
+  let n = 0;
+  while (!app.state.over && n < 40) {
+    doStep({ ...teamCommits(0), ...app.ctrl.decide(app.state, 1, app.data) });
+    n++;
+    if (S.canAct(app.state, S.unitById(app.state, 'A'))) break;
+  }
+  render();
+}
+
+function hint(){
+  const u = S.unitById(app.state, app.active);
+  if (!u || !S.canAct(app.state, u)) return;
+  const c = app.helper.decideUnit(app.state, u.id, app.data);
+  app.sel[u.id] = c.filter((x) => x.type === 'start').map((x) => x.action);
+  app.cancels[u.id] = [];
+  app.descFor = app.sel[u.id][0] || null;
+  render();
+}
+
+// ---------------------------------------------------------------- watch
+
+function currentState(){ return app.mode === 'watch' ? app.frames[app.idx].state : app.state; }
+function stopPlay(){ if (app.timer) clearInterval(app.timer); app.timer = null; $('tPlay').textContent = 'Play'; }
+function goFrame(i){ app.idx = Math.max(0, Math.min(app.frames.length - 1, i)); render(); }
+
+// ---------------------------------------------------------------- render
+
+function render(){
+  const s = currentState();
+  const d = app.data;
+  const playing = app.mode !== 'watch';
+  $('charALabel').textContent = TEAM_NAMES[app.mode][0][0] === 'You' ? 'You' : app.mode === 'hot' ? 'Player 1' : 'Fighter A';
+  $('charBLabel').textContent = app.mode === 'play' ? 'Opponent' : app.mode === 'hot' ? 'Player 2' : 'Fighter B';
+  $('aiField').classList.toggle('hidden', app.mode === 'hot');
+  $('tickNum').textContent = s.tick;
+  const banner = $('banner');
+  if (s.over) {
+    const who = TEAM_NAMES[app.mode][s.winner === 'draw' ? 0 : s.winner][0];
+    const how = s.endReason === 'ko' ? 'by knockout' : 'on time';
+    banner.textContent = s.winner === 'draw' ? `Draw at tick ${s.tick}` : `${who} ${who === 'You' ? 'win' : 'wins'} ${how} at tick ${s.tick}`;
+    banner.classList.remove('hidden');
+  } else banner.classList.add('hidden');
+
+  drawStage(s);
+  drawUnits(s);
+  const commits = playing ? app.lastCommits : app.frames[app.idx].commits;
+  const parts = Object.entries(commits || {}).map(([id, c]) => `${label(id)}: ${commitText(c)}`);
+  $('commitLine').textContent = s.tick === 0 ? 'Every unit starts free. Commits are revealed when the tick plays out.' :
+    `Committed for tick ${s.tick}:  ${parts.length ? parts.join('   ·   ') : 'nothing from anyone'}`;
+  $('transport').classList.toggle('hidden', playing);
+  if (!playing) { $('scrub').max = String(app.frames.length - 1); $('scrub').value = String(app.idx); }
+  $('movePanel').classList.toggle('hidden', !playing);
+  if (playing) drawCommitPanel(s);
+  drawThreats(s);
+  drawLog(playing ? app.log : framesLog());
+}
+
+function commitText(c){
+  if (!c || !c.length) return 'nothing';
+  return c.map((x) => x.type === 'cancel' ? 'cancel' : (app.data.actions[x.action]?.name ?? x.action)).join(' + ');
+}
+
+function framesLog(){
+  const out = [];
+  for (let i = app.idx; i >= 1 && out.length < 300; i--) out.push(...app.frames[i].events.slice().reverse());
+  return out;
+}
+
+const BANDS = { head:[G-150,G-112], body:[G-115,G-60], legs:[G-62,G-2] };
+function zonesFor(posture){
+  if (posture === 'crouching') return { head:[G-108,G-80], body:[G-78,G-38], legs:[G-36,G] };
+  if (posture === 'airborne') return { head:[G-205,G-175], body:[G-172,G-122], legs:[G-120,G-62] };
+  return { head:[G-146,G-116], body:[G-113,G-63], legs:[G-61,G] };
+}
+
+function drawStage(s){
+  const d = app.data, r = d.rules;
+  const X = (x) => x * 1000 / r.stageWidth;
+  let h = '';
+  for (let x = 0; x <= r.stageWidth; x += 100) {
+    h += `<line x1="${X(x)}" y1="40" x2="${X(x)}" y2="${G}" stroke="var(--grid)" stroke-width="1"/>`;
+    h += `<text x="${X(x) + 3}" y="${G + 18}" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--muted)">${x}</text>`;
+  }
+  h += `<line x1="0" y1="${G}" x2="1000" y2="${G}" stroke="var(--ink)" stroke-width="2"/>`;
+  h += `<rect x="0" y="40" width="4" height="${G-40}" fill="var(--muted)"/><rect x="996" y="40" width="4" height="${G-40}" fill="var(--muted)"/>`;
+  const bodies = s.units.filter((u) => u.kind !== 'object');
+  for (const u of bodies) h += reachBoxes(s, u, X);
+  for (const u of bodies) h += drawUnit(s, u, X);
+  for (const o of s.units.filter((u) => u.kind === 'object')) h += drawObject(o, X);
+  const a = S.unitById(s, 'A'), b = S.unitById(s, 'B');
+  h += `<text x="${X((a.x + b.x) / 2)}" y="${G + 34}" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink)">fighters ${Math.round(Math.abs(b.x - a.x))} apart</text>`;
+  const svg = $('stage');
+  svg.innerHTML = h;
+  if (svg.getBoundingClientRect().width < 640) {
+    const cx = X((a.x + b.x) / 2);
+    svg.setAttribute('viewBox', `${Math.max(0, Math.min(500, cx - 250))} 60 500 244`);
+  } else svg.setAttribute('viewBox', '0 0 1000 300');
+  svg.setAttribute('aria-label', `Arena at tick ${s.tick}: ` + bodies.map((u) => `${label(u.id)} at ${Math.round(u.x)}, ${u.posture}`).join('; '));
+}
+
+function reachBoxes(s, u, X){
+  const d = app.data;
+  const dir = S.facingOf(s, u);
+  const color = TEAM_COLOR[u.team];
+  let h = '';
+  for (const inst of u.actions) {
+    const def = d.actions[inst.id];
+    if (!def.hit) continue;
+    const last = inst.t - 1;
+    const wasLive = last >= inst.windup && last < inst.windup + inst.active;
+    const until = S.ticksUntilActive(inst);
+    const coming = !wasLive && until !== null && inst.t <= inst.windup;
+    if (!wasLive && !coming) continue;
+    const [y0, y1] = BANDS[def.hit.zone];
+    const xa = X(u.x + dir * def.hit.reach[0]), xb = X(u.x + dir * def.hit.reach[1]);
+    const x0 = Math.min(xa, xb), w = Math.abs(xb - xa);
+    h += wasLive
+      ? `<rect x="${x0}" y="${y0}" width="${w}" height="${y1-y0}" fill="${color}" fill-opacity="0.18" stroke="${color}" stroke-width="1.5"/>`
+      : `<rect x="${x0}" y="${y0}" width="${w}" height="${y1-y0}" fill="none" stroke="${color}" stroke-width="1.5" stroke-dasharray="5 4"/>`;
+    h += `<text x="${x0 + w/2}" y="${y0 - 5}" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="${color}">${esc(wasLive ? def.name : `${def.name} in ${until + 1}`)}</text>`;
+  }
+  return h;
+}
+
+function drawUnit(s, u, X){
+  const d = app.data;
+  const ch = d.characters[u.char];
+  const dir = S.facingOf(s, u);
+  const x = X(u.x);
+  const color = TEAM_COLOR[u.team];
+  const summon = u.kind === 'summon';
+  const fillOp = summon ? 0.62 : 1;
+  const outline = summon ? `stroke="${color}" stroke-width="1.5" stroke-dasharray="4 3"` : '';
+  let h = `<g opacity="${u.reaction ? 0.55 : 1}">`;
+  if (u.posture === 'grounded') {
+    h += `<rect x="${x - 58}" y="${G - 20}" width="116" height="20" rx="4" fill="${color}" fill-opacity="${fillOp}" ${outline}/>`;
+  } else if (ch.shape === 'beast') {
+    const lift = u.posture === 'airborne' ? 50 : u.posture === 'crouching' ? -10 : 0;
+    const y = G - 58 - lift;
+    // Drawn inside the same 40-wide body every unit collides with.
+    h += `<rect x="${x - 24}" y="${y + 4}" width="48" height="28" rx="9" fill="${color}" fill-opacity="${fillOp}" ${outline}/>`;
+    h += `<rect x="${x + dir * 18 - 11}" y="${y - 14}" width="22" height="22" rx="6" fill="${color}" fill-opacity="${fillOp}" ${outline}/>`;
+    h += `<rect x="${x + dir * 22 - 2}" y="${y - 8}" width="4" height="5" rx="1" fill="var(--surface)"/>`;
+    for (const off of [-18, -7, 7, 18]) h += `<rect x="${x + off - 3}" y="${y + 30}" width="6" height="${G - (y + 30)}" rx="2" fill="${color}" fill-opacity="${fillOp * 0.8}"/>`;
+  } else {
+    const z = zonesFor(u.posture);
+    const lean = u.posture === 'backfoot' ? -dir * 10 : 0;
+    h += `<g transform="translate(${lean} 0)">`;
+    h += `<rect x="${x - 16}" y="${z.legs[0]}" width="32" height="${z.legs[1]-z.legs[0]}" rx="3" fill="${color}" fill-opacity="${0.75 * fillOp}" ${outline}/>`;
+    h += `<rect x="${x - 20}" y="${z.body[0]}" width="40" height="${z.body[1]-z.body[0]}" rx="4" fill="${color}" fill-opacity="${fillOp}" ${outline}/>`;
+    h += `<rect x="${x - 14}" y="${z.head[0]}" width="28" height="${z.head[1]-z.head[0]}" rx="6" fill="${color}" fill-opacity="${fillOp}" ${outline}/>`;
+    h += `<rect x="${x + dir * 6 - 2}" y="${z.head[0] + 9}" width="5" height="6" rx="1" fill="var(--surface)"/>`;
+    for (const inst of u.actions) {
+      const def = d.actions[inst.id];
+      const last = inst.t - 1;
+      if (!(last >= inst.windup && last < inst.windup + inst.active)) continue;
+      if (def.kind === 'block') {
+        const top = u.posture === 'crouching' ? z.body[0] : z.head[0];
+        const bot = u.posture === 'crouching' ? z.legs[1] : z.body[1];
+        h += `<rect x="${x + dir * 26 - 3}" y="${top}" width="7" height="${bot - top}" rx="2" fill="var(--ink)" fill-opacity="0.75"/>`;
+      }
+      if (def.kind === 'parry') h += `<rect x="${x + dir * 26 - 3}" y="${z.head[0]}" width="7" height="${z.body[0] - z.head[0] + 22}" rx="2" fill="none" stroke="var(--ink)" stroke-width="2"/>`;
+    }
+    if (u.posture === 'airborne') h += `<ellipse cx="${x}" cy="${G - 2}" rx="22" ry="4" fill="var(--ink)" fill-opacity="0.15"/>`;
+    h += `</g>`;
+  }
+  if (!u.leader) h += `<text x="${x}" y="${G - (ch.shape === 'beast' ? 80 : 158)}" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="${color}">${esc(u.name)}</text>`;
+  return h + `</g>`;
+}
+
+function drawObject(o, X){
+  const p = app.data.actions[o.char].projectile;
+  const [y0, y1] = BANDS[p.impact.zone];
+  const y = (y0 + y1) / 2, x = X(o.x);
+  const color = TEAM_COLOR[o.team];
+  let h = p.radius >= 10
+    ? `<circle cx="${x}" cy="${y}" r="${p.radius}" fill="var(--stone)" stroke="${color}" stroke-width="2"/>`
+    : `<rect x="${x - 8}" y="${y - 2}" width="16" height="4" rx="2" fill="var(--ink)"/>`;
+  h += `<line x1="${x - (o.dir || 1) * (p.radius + 6)}" y1="${y}" x2="${x - (o.dir || 1) * (p.radius + 34)}" y2="${y}" stroke="${color}" stroke-width="1.5" stroke-dasharray="3 4"/>`;
+  h += `<text x="${x}" y="${y - p.radius - 6}" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--muted)">${esc(p.name)}</text>`;
+  return h;
+}
+
+function reactionText(r){
+  const names = { stagger: 'staggered', blockstun: 'blockstun', down: 'down', deflected: 'deflected' };
+  return `${names[r.kind]} ${r.left}`;
+}
+
+function phaseText(inst, def){
+  const left = S.ticksLeft(inst);
+  if (inst.cancelLeft > 0) return `cancelling · ${left} left`;
+  if (inst.t <= inst.windup && inst.active > 0) {
+    const u = S.ticksUntilActive(inst);
+    const verb = def.hit ? 'lands' : def.projectile ? 'releases' : def.summon ? 'arrives' : 'takes effect';
+    return u === 0 ? `${verb} next tick` : `${verb} in ${u + 1} ticks`;
+  }
+  if (inst.t < inst.windup + inst.active) return `active · ${left} left`;
+  return `recovering · ${left} left`;
+}
+
+function drawUnits(s){
+  const d = app.data;
+  const bodies = s.units.filter((u) => u.kind !== 'object').sort((a, b) => a.team - b.team || (b.leader - a.leader));
+  $('units').innerHTML = bodies.map((u) => {
+    const ch = d.characters[u.char];
+    const pips = Array.from({ length: ch.apCap }, (_, i) => `<i class="${i < u.ap ? 'on' : ''}"></i>`).join('');
+    const acts = u.actions.length ? u.actions.map((inst) => {
+      const def = d.actions[inst.id];
+      const total = inst.windup + inst.active + inst.recovery;
+      const cells = Array.from({ length: total }, (_, i) => {
+        const k = i < inst.windup ? 'w' : i < inst.windup + inst.active ? 'a' : 'r';
+        return `<i class="${k}${i < inst.t ? ' done' : i === inst.t ? ' now' : ''}"></i>`;
+      }).join('');
+      return `<div class="act"><span class="nm">${esc(def.name)}</span><span class="st">${esc(phaseText(inst, def))}</span><div class="cells">${cells}</div></div>`;
+    }).join('') : `<p class="empty">No actions running.</p>`;
+    const tags = [`<span class="tag">${u.posture}</span>`];
+    if (u.reaction) tags.push(`<span class="tag warn">${esc(reactionText(u.reaction))}</span>`);
+    const role = u.leader ? ch.name : `${ch.name}${u.expiresAt ? ` · leaves in ${u.expiresAt - s.tick}` : ''}`;
+    const upkeep = S.upkeepOf(s, u, d);
+    return `<article class="card fp ${u.kind}" style="--c:${TEAM_COLOR[u.team]}">
+      <div class="fp-head"><span class="fp-name"><i class="dot"></i>${esc(label(u.id))}</span><span class="fp-tags">${tags.join('')}</span></div>
+      <div class="fp-role">${esc(role)}</div>
+      <div class="bar" aria-label="Health ${u.hp} of ${u.maxHp}"><i style="width:${(100 * u.hp / u.maxHp).toFixed(1)}%"></i></div>
+      <div class="meta"><span>HP ${u.hp} / ${u.maxHp}</span><span class="pips" aria-label="Action points ${u.ap} of ${ch.apCap}">AP&nbsp;${pips}</span><span>${upkeep ? `upkeep −${upkeep}/tick` : `x ${Math.round(u.x)}`}</span></div>
+      <div class="acts">${acts}</div>
+    </article>`;
+  }).join('');
+}
+
+function drawCommitPanel(s){
+  const d = app.data;
+  const team = commandingTeam();
+  const units = myUnits();
+  if (!units.find((u) => u.id === app.active)) app.active = units[0]?.id;
+  const who = TEAM_NAMES[app.mode][team][0];
+  $('moveTitle').textContent = app.mode === 'hot' ? `${who}'s commit for tick ${s.tick + 1}` : `Your commit for tick ${s.tick + 1}`;
+  const hand = app.mode === 'hot' && app.handover && !s.over;
+  $('handover').classList.toggle('hidden', !hand);
+  $('picker').classList.toggle('hidden', hand);
+  if (hand) {
+    const other = TEAM_NAMES.hot[team === 0 ? 1 : 0][0];
+    $('handoverText').textContent = team === 1 ? 'Player 1 has committed. Hand over to Player 2; Player 1 looks away.'
+      : s.tick === 0 ? `${who} goes first. ${other} looks away.` : `Tick ${s.tick} has played out. ${who}, your turn. ${other} looks away.`;
+    $('handoverBtn').textContent = `I'm ${who}, show my units`;
+  }
+  const active = S.unitById(s, app.active);
+  // Tabs: one per unit you command.
+  $('unitTabs').innerHTML = units.map((u) => {
+    const free = S.canAct(s, u);
+    const n = (app.sel[u.id] || []).length + (app.cancels[u.id] || []).length;
+    const status = !free ? (u.reaction ? reactionText(u.reaction) : 'busy') : app.auto[u.id] ? 'AI commands it' : n ? `${n} picked` : 'nothing picked';
+    return `<button class="tab" role="tab" data-unit="${esc(u.id)}" aria-selected="${u.id === app.active}" style="--c:${TEAM_COLOR[u.team]}">${esc(label(u.id))}<small>${esc(status)}</small></button>`;
+  }).join('');
+  const isSummon = active && active.kind === 'summon';
+  $('autoWrap').classList.toggle('hidden', !isSummon);
+  if (isSummon) { $('autoBox').checked = !!app.auto[active.id]; $('autoText').textContent = `Let the AI command ${label(active.id).toLowerCase()}`; }
+
+  let h = '';
+  const free = active && S.canAct(s, active);
+  const { busy, ap } = active ? plan(active.id) : { busy: new Set(), ap: 0 };
+  $('apLine').textContent = free && !app.auto[active.id] ? `${label(active.id)}: ${ap} AP left this tick` : '';
+  if (s.over) h = `<p class="empty">The match is over. Undo a few ticks, or start a new match above.</p>`;
+  else if (!active) h = `<p class="empty">No units to command.</p>`;
+  else if (!free) h = `<p class="empty">${esc(label(active.id))} can't act this tick (${esc(active.reaction ? reactionText(active.reaction) : '')}).</p>`;
+  else if (app.auto[active.id]) h = `<p class="empty">The AI will choose for ${esc(label(active.id).toLowerCase())} when you commit.</p>`;
+  else {
+    const ch = d.characters[active.char];
+    const cancellable = S.legalCancels(s, active.id, d);
+    if (cancellable.length) {
+      h += `<div class="group"><span class="group-name">Cancel a wind-up</span><div class="moves">` + cancellable.map((uid) => {
+        const inst = active.actions.find((i) => i.uid === uid);
+        const def = d.actions[inst.id];
+        return `<button class="mv" style="--c:${TEAM_COLOR[active.team]}" data-cancel="${uid}" data-desc="${def.id}" aria-pressed="${(app.cancels[active.id] || []).includes(uid)}">${esc(def.name)}<small>costs ${def.cancelCost} tick${def.cancelCost === 1 ? '' : 's'}</small></button>`;
+      }).join('') + `</div></div>`;
+    }
+    const groups = {};
+    for (const id of ch.moves) {
+      const def = d.actions[id];
+      if (!def || !def.from.includes(active.posture)) continue;
+      (groups[GROUP_OF[def.kind]] ||= []).push(id);
+    }
+    for (const g of GROUP_ORDER) {
+      if (!groups[g]) continue;
+      h += `<div class="group"><span class="group-name">${g}</span><div class="moves">` + groups[g].map((id) => {
+        const def = d.actions[id];
+        const selected = (app.sel[active.id] || []).includes(id);
+        const why = selected ? null : S.whyNot(s, active.id, id, d, { busy, apLeft: ap });
+        const du = S.durations(def, ch);
+        return `<button class="mv" style="--c:${TEAM_COLOR[active.team]}" data-move="${id}" data-desc="${id}" aria-pressed="${selected}" ${why ? 'disabled' : ''} title="${esc(why ? 'Not now: ' + why : def.description)}">${esc(def.name)}<small>${def.ap} AP · ${du.windup + du.active + du.recovery} ticks</small></button>`;
+      }).join('') + `</div></div>`;
+    }
+  }
+  $('moveGroups').innerHTML = h;
+  drawDesc();
+
+  const picked = units.map((u) => {
+    const c = app.auto[u.id] && S.canAct(s, u) ? 'AI chooses' : commitText([...(app.cancels[u.id] || []).map(() => ({ type: 'cancel' })), ...(app.sel[u.id] || []).map((a) => ({ type: 'start', action: a }))]);
+    return `${label(u.id)}: ${c}`;
+  });
+  $('selLine').textContent = s.over ? '' : `Committing  ${picked.join('  ·  ')}`;
+  const anyFree = units.some((u) => S.canAct(s, u));
+  $('commitBtn').disabled = s.over || hand || !anyFree;
+  $('commitBtn').textContent = app.mode === 'hot' && team === 0 ? 'Commit and hand over' : 'Commit';
+  $('hintBtn').disabled = s.over || hand || !free || !!(active && app.auto[active.id]);
+  $('undoBtn').disabled = !app.history.length;
+  $('skipBtn').classList.toggle('hidden', app.mode !== 'play');
+  $('skipBtn').disabled = s.over || S.canAct(s, S.unitById(s, 'A'));
+}
+
+function drawDesc(){
+  const id = app.descFor;
+  const def = id && app.data.actions[id];
+  if (!def) { $('desc').innerHTML = `<span>Point at or focus an action to read what it does. Pick actions for each unit, then commit them all at once.</span>`; return; }
+  const parts = [`${def.ap} AP`, `wind-up ${def.windup}`, `active ${def.active}`, `recovery ${def.recovery}`, `uses ${def.channels.join(' + ')}`];
+  if (def.cancelCost !== undefined) parts.push(`cancel ${def.cancelCost}`);
+  $('desc').innerHTML = `<b>${esc(def.name)}</b>${esc(def.description)}<br><span>${esc(parts.join(' · '))}</span>`;
+}
+
+function drawThreats(s){
+  const d = app.data;
+  const targetId = app.mode === 'watch' ? 'B' : (app.active || 'A');
+  $('threatTitle').textContent = `Coming at ${label(targetId).toLowerCase() === 'you' ? 'you' : label(targetId)}`;
+  if (app.mode === 'hot' && app.handover) { $('threats').innerHTML = `<p class="empty">Hidden until the next player shows their units.</p>`; return; }
+  const list = S.threatsAgainst(s, targetId, d);
+  $('threats').innerHTML = list.length ? list.map((t) => {
+    const when = t.ticksUntilActive === 0 ? 'lands next tick' : `lands in ${t.ticksUntilActive + 1} ticks`;
+    const result = t.onHit.kind === 'knockdown' ? 'knockdown' : t.onHit.kind === 'thrown' ? 'thrown down' : t.onHit.kind === 'backfoot' ? 'back foot' : `stagger ${t.onHit.ticks}`;
+    return `<div class="threat ${t.inReach && t.ticksUntilActive === 0 ? 'hot' : ''}">
+      <b>${esc(t.name)} from ${esc(label(t.source))}, to the ${t.zone}</b>
+      <span class="ln">${when} · ${t.inReach ? 'will reach' : 'out of reach'}</span>
+      <span class="ln">${t.damage} damage (${t.kind === 'grab' ? 'unblockable' : t.blockedDamage + ' if blocked'}) · ${result}</span>
+      <span class="ln">answers: ${esc(t.answers.join(', '))}</span>
+    </div>`;
+  }).join('') : `<p class="empty">Nothing is coming at the moment.</p>`;
+}
+
+function eventText(e){
+  const d = app.data;
+  const who = label(e.unit);
+  const nm = (id) => d.actions[id]?.name ?? id;
+  const tgt = e.target ? label(e.target) : '';
+  const isObj = app.names[e.unit]?.kind === 'object';
+  switch (e.type) {
+    case 'start': return [`${who} started ${nm(e.action)}${e.detail ? ' (' + e.detail + ')' : ''}`, true];
+    case 'cancel': return [`${who} cancelled ${nm(e.action)}`, true];
+    case 'illegal': return [`${who}: ${nm(e.action)} not allowed (${e.detail})`, false];
+    case 'hit': return [`${isObj ? who : who + ': ' + nm(e.action)} hit ${tgt} in the ${e.zone} for ${e.damage}`, false];
+    case 'grabbed': return [`${who} grabbed and threw ${tgt} for ${e.damage}`, false];
+    case 'blocked': return [`${isObj ? who : who + ': ' + nm(e.action)} blocked by ${tgt}, ${e.damage} got through`, false];
+    case 'clash': return [`${who}: ${nm(e.action)} ${e.detail === 'grabs broke each other' ? 'broke against a grab' : 'met a strike head on'}`, false];
+    case 'parried': return [`${who}: ${nm(e.action)} was intercepted by ${tgt}`, false];
+    case 'whiff': return [`${who}: ${nm(e.action)} missed${e.detail ? ' (' + e.detail + ')' : ''}`, true];
+    case 'trade': return [`Trade: ${who} and ${tgt} hit each other on the same tick`, false];
+    case 'knockdown': return [`${who} knocked down`, false];
+    case 'getup': return [`${who} back on their feet`, true];
+    case 'summoned': return [`${who} called ${tgt}`, false];
+    case 'released': return [`${who} let go of a ${(d.actions[e.action]?.projectile?.name || 'projectile').toLowerCase()}`, false];
+    case 'impact': return [`${who} hit the wall`, true];
+    case 'defeated': return [`${who} was defeated`, false];
+    case 'expired': return [`${who} left the fight`, false];
+    case 'ko': return ['Knockout', false];
+    case 'timeout': return ['Time is up', false];
+    default: return [e.type, true];
+  }
+}
+
+function drawLog(events){
+  $('log').innerHTML = events.length ? events.slice(0, 150).map((e) => {
+    const [text, minor] = eventText(e);
+    return `<li><span class="t">T${e.tick}</span><span class="${minor ? 'minor' : ''}">${esc(text)}</span></li>`;
+  }).join('') : `<li><span class="t"></span><span class="minor">No events yet.</span></li>`;
+}
+
+// ---------------------------------------------------------------- events
+
+$('modePlay').addEventListener('click', () => setMode('play'));
+$('modeHot').addEventListener('click', () => setMode('hot'));
+$('modeWatch').addEventListener('click', () => setMode('watch'));
+$('newMatch').addEventListener('click', () => { app.replay = null; newMatch(); });
+$('unitTabs').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-unit]');
+  if (!b) return;
+  app.active = b.dataset.unit;
+  render();
+});
+$('autoBox').addEventListener('change', (e) => { app.auto[app.active] = e.target.checked; render(); });
+$('moveGroups').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b || b.disabled) return;
+  const id = app.active;
+  if (b.dataset.move) {
+    const mv = b.dataset.move;
+    const cur = app.sel[id] || [];
+    app.sel[id] = cur.includes(mv) ? cur.filter((x) => x !== mv) : [...cur, mv];
+    app.descFor = mv;
+  } else if (b.dataset.cancel) {
+    const uid = Number(b.dataset.cancel);
+    const cur = app.cancels[id] || [];
+    app.cancels[id] = cur.includes(uid) ? cur.filter((x) => x !== uid) : [...cur, uid];
+  }
+  render();
+});
+const showDesc = (e) => { const b = e.target.closest('[data-desc]'); if (b && b.dataset.desc !== app.descFor) { app.descFor = b.dataset.desc; drawDesc(); } };
+$('moveGroups').addEventListener('mouseover', showDesc);
+$('moveGroups').addEventListener('focusin', showDesc);
+$('commitBtn').addEventListener('click', commitPressed);
+$('handoverBtn').addEventListener('click', () => { app.handover = false; render(); });
+$('hintBtn').addEventListener('click', hint);
+$('undoBtn').addEventListener('click', undo);
+$('skipBtn').addEventListener('click', skipToTurn);
+$('tFirst').addEventListener('click', () => { stopPlay(); goFrame(0); });
+$('tPrev').addEventListener('click', () => { stopPlay(); goFrame(app.idx - 1); });
+$('tNext').addEventListener('click', () => { stopPlay(); goFrame(app.idx + 1); });
+$('scrub').addEventListener('input', (e) => { stopPlay(); goFrame(Number(e.target.value)); });
+$('tPlay').addEventListener('click', () => {
+  if (app.timer) { stopPlay(); return; }
+  if (app.idx >= app.frames.length - 1) app.idx = 0;
+  $('tPlay').textContent = 'Pause';
+  app.timer = setInterval(() => { if (app.idx >= app.frames.length - 1) { stopPlay(); return; } goFrame(app.idx + 1); }, 260);
+});
+$('loadReplay').addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  try {
+    const rep = JSON.parse(await file.text());
+    if (!rep.frames || !rep.data || !rep.frames[0]?.state?.units) throw new Error('This file is not a replay saved by this version of the simulator.');
+    app.mode = 'watch';
+    for (const [id, m] of [['modePlay','play'],['modeHot','hot'],['modeWatch','watch']]) $(id).setAttribute('aria-pressed', String(m === 'watch'));
+    app.replay = rep; app.data = rep.data; app.chars = rep.chars; app.frames = rep.frames; app.idx = 0; app.names = {};
+    for (const f of app.frames) remember(f.state);
+    fillSelects();
+    stopPlay();
+    render();
+  } catch (err) {
+    $('commitLine').textContent = `Couldn't open that file: ${err.message}`;
+  }
+  e.target.value = '';
+});
+window.addEventListener('resize', () => render());
+
+fillSelects();
+newMatch();
+})();
+</script>
+</body>
+</html>

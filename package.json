@@ -1,0 +1,21 @@
+{
+  "name": "tick-fighter-sim",
+  "version": "0.2.0",
+  "description": "Headless simulator and box viewer for the Tick Fighter prototype",
+  "scripts": {
+    "dev": "esbuild src/browser.ts --bundle --format=iife --global-name=TickSim --outfile=viewer/sim.bundle.js --servedir=viewer --serve=8000 --watch=forever",
+    "sim": "tsx src/cli/batch.ts",
+    "test": "node --import tsx --test test/engine.test.ts test/ai.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build:viewer": "esbuild src/browser.ts --bundle --format=iife --global-name=TickSim --outfile=viewer/sim.bundle.js",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  },
+  "private": true,
+  "type": "module"
+}
