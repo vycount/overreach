@@ -48,7 +48,28 @@ button:focus-visible,select:focus-visible,input:focus-visible,label.file:focus-w
 label.file{position:relative;overflow:hidden}
 label.file input{position:absolute;inset:0;opacity:0;cursor:pointer}
 .spacer{flex:1}
-.arena svg{display:block;width:100%;height:auto}
+.arena{position:relative}
+.arena svg{display:block;width:100%;height:auto;touch-action:manipulation}
+.point-hint{font-size:12px;color:var(--muted);margin-left:auto}
+.tip{position:absolute;z-index:5;width:min(320px,calc(100% - 16px));background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--c);border-radius:8px;padding:9px 11px;box-shadow:0 8px 28px rgb(0 0 0 / .2);font-size:13px;display:grid;gap:7px;pointer-events:none}
+.tip[hidden]{display:none}
+.tip.pinned{pointer-events:auto}
+.tip p{margin:0}
+.tip-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.tip-h b{font-size:14px}
+.tip-h span,.tip-row span{font-family:var(--font-mono);font-size:11px;color:var(--muted)}
+.tip-act{display:grid;gap:5px;border-top:1px solid var(--line);padding-top:7px}
+.tip-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.tip-dmg{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.tip-dmg div{background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:4px 8px;display:grid}
+.tip-dmg b{font-family:var(--font-mono);font-size:20px;font-weight:600;line-height:1.2}
+.tip-dmg small{font-size:11px;color:var(--muted)}
+.tip-muted{color:var(--muted)}
+.tip-out{background:var(--surface-2);border-radius:6px;padding:5px 8px}
+.tip-foot{font-size:11px}
+.tip b.ok{color:var(--ok)} .tip b.warn{color:var(--danger)}
+/* On a phone the card would cover the stage, so it sits under it instead. */
+@media (max-width:640px){ .tip{position:static;width:auto;margin:0 14px 10px;box-shadow:none;pointer-events:auto} }
 .arena-top{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 14px 0;flex-wrap:wrap}
 .tick{font-family:var(--font-mono);font-size:13px;color:var(--muted)}
 .tick b{font-size:22px;color:var(--ink);font-weight:600;margin-left:4px;font-variant-numeric:tabular-nums}
@@ -82,6 +103,7 @@ label.file input{position:absolute;inset:0;opacity:0;cursor:pointer}
 .cells i.r{border-style:dashed}
 .cells i.done{opacity:.3}
 .cells i.now{outline:2px solid var(--ink);outline-offset:1px}
+.act .fc{grid-column:1 / -1;font-family:var(--font-mono);font-size:11px;color:var(--muted)}
 .empty{font-size:13px;color:var(--muted);margin:0}
 .lower{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:14px}
 @media (max-width:820px){.lower{grid-template-columns:minmax(0,1fr)}}
@@ -147,12 +169,14 @@ label.file input{position:absolute;inset:0;opacity:0;cursor:pointer}
     <button class="btn primary" id="newMatch">New match</button>
   </section>
 
-  <section class="card arena" aria-label="Arena">
+  <section class="card arena" id="arena" aria-label="Arena">
     <div class="arena-top">
       <div class="tick">TICK<b id="tickNum">0</b></div>
       <div id="banner" class="banner hidden"></div>
+      <span class="point-hint">Point at a limb, or tap it, to see what it's doing and what it would deal.</span>
     </div>
-    <svg id="stage" viewBox="0 0 1000 300" role="img" aria-label="Arena"></svg>
+    <svg id="stage" viewBox="150 44 700 260" role="img" aria-label="Arena"></svg>
+    <div class="tip" id="tip" role="status" hidden></div>
     <div class="commits" id="commitLine"></div>
     <div class="transport hidden" id="transport">
       <button class="btn" id="tFirst">First</button>
@@ -214,6 +238,7 @@ const app = {
   sel: {}, cancels: {}, auto: {}, active: null, descFor: null,
   turn: 0, pending: null, handover: false,
   frames: null, idx: 0, timer: null, replay: null, names: {},
+  hover: null, pinned: false, tipAt: null, tipInfo: null, narrow: false,
 };
 
 // ---------------------------------------------------------------- names
@@ -252,6 +277,7 @@ function newMatch(){
   app.ai = $('aiKind').value;
   app.seed = Number($('seed').value) || 0;
   app.log = []; app.lastCommits = {}; app.history = []; app.auto = {}; app.names = {};
+  app.hover = null; app.pinned = false; anim.snap = true;
   resetTurnState();
   if (!app.replay) app.data = S.cloneData();
   if (app.mode === 'watch') {
@@ -408,7 +434,8 @@ function render(){
     banner.classList.remove('hidden');
   } else banner.classList.add('hidden');
 
-  drawStage(s);
+  app.narrow = $('stage').getBoundingClientRect().width < 640;
+  stageRender(s);
   drawUnits(s);
   const commits = playing ? app.lastCommits : app.frames[app.idx].commits;
   const parts = Object.entries(commits || {}).map(([id, c]) => `${label(id)}: ${commitText(c)}`);
@@ -433,14 +460,405 @@ function framesLog(){
   return out;
 }
 
+// ---------------------------------------------------------------- figures
+// Every body is a jointed figure. A pose is a set of joint angles in degrees, measured
+// from straight down, positive toward the side the unit faces. A unit's pose comes from
+// its posture, then each running action at its current phase, then any reaction.
+// Between ticks the stage eases from the old pose and position to the new ones.
+
+// Where strikes and objects travel, by zone, for a standing body.
 const BANDS = { head:[G-150,G-112], body:[G-115,G-60], legs:[G-62,G-2] };
-function zonesFor(posture){
-  if (posture === 'crouching') return { head:[G-108,G-80], body:[G-78,G-38], legs:[G-36,G] };
-  if (posture === 'airborne') return { head:[G-205,G-175], body:[G-172,G-122], legs:[G-120,G-62] };
-  return { head:[G-146,G-116], body:[G-113,G-63], legs:[G-61,G] };
+const RAD = Math.PI / 180;
+const along = (o, a, len) => [o[0] + Math.sin(a * RAD) * len, o[1] - Math.cos(a * RAD) * len];
+const lerp = (a, b, k) => a + (b - a) * k;
+function blend(p, part, k){
+  if (!part || k <= 0) return p;
+  for (const key in part) { const from = p[key] ?? part[key]; p[key] = lerp(from, part[key], Math.min(1, k)); }
+  return p;
 }
 
-function drawStage(s){
+const HUMAN = { torso:48, neck:17, head:12, upper:24, fore:24, thigh:32, shin:31, foot:10 };
+const STANCE = { lean:6, head:0, hipX:0, lift:0, la1:30, la2:160, ra1:12, ra2:170, ll1:14, ll2:4, rl1:-20, rl2:-10, lft:90, rft:90 };
+const KNEEL = { lean:14, head:0, ll1:82, ll2:0, rl1:-8, rl2:-96, la1:24, la2:70, ra1:8, ra2:40 };
+const TUCK = { ll1:62, ll2:-30, rl1:26, rl2:-46 };
+const HUMAN_POSES = {
+  posture: {
+    standing: STANCE,
+    crouching: { ...STANCE, lean:26, ll1:78, ll2:-8, rl1:22, rl2:-82, la1:38, la2:150, ra1:24, ra2:165 },
+    backfoot: { ...STANCE, lean:-14, head:-8, hipX:-6, ll1:28, ll2:18, rl1:-6, rl2:-24, la1:22, la2:120, ra1:4, ra2:140 },
+    airborne: { ...STANCE, lift:46, ll1:72, ll2:-18, rl1:28, rl2:-62 },
+    grounded: { ...STANCE, lean:-90, head:6, la1:-125, la2:-160, ra1:-70, ra2:-110, ll1:86, ll2:92, rl1:76, rl2:96, lft:80, rft:80 },
+  },
+  reaction: {
+    stagger: { lean:-18, head:-26, hipX:-5, la1:12, la2:70, ra1:-12, ra2:40 },
+    deflected: { lean:-12, head:-12, la1:-50, la2:-20, ra1:-10, ra2:50 },
+    blockstun: { lean:-6, head:-6, hipX:-4 },
+  },
+  // wind: the pose at the end of the wind-up. hit: the active ticks (a list alternates tick by tick).
+  // to: a posture change, eased toward during the wind-up.
+  action: {
+    jab: { wind:{ la1:18, la2:150 }, hit:{ la1:99, la2:97, lean:12, hipX:6 } },
+    cross: { wind:{ ra1:-12, ra2:158, lean:-4, hipX:-3 }, hit:{ ra1:99, ra2:97, lean:18, hipX:10 } },
+    hook: { wind:{ ra1:-22, ra2:100, lean:-4 }, hit:{ ra1:58, ra2:88, lean:20, hipX:8 } },
+    lowkick: { wind:{ rl1:50, rl2:-25, lean:-4 }, hit:{ rl1:72, rl2:66, ll1:4, ll2:0, lean:-14, rft:40 } },
+    sweep: { wind:{ lean:30, ll1:80, ll2:-10, rl1:22, rl2:-80 }, hit:{ lean:34, ll1:82, ll2:-12, rl1:86, rl2:89, rft:60, la1:30, la2:15 } },
+    roundhouse: { wind:{ rl1:92, rl2:0, lean:-16, ll1:2, ll2:0 }, hit:{ rl1:148, rl2:140, ll1:0, ll2:0, lean:-32, head:-6, hipX:6, rft:30, la1:-20, la2:40 } },
+    jumpkick: { wind:{ ...TUCK, lean:14 }, hit:{ ll1:100, ll2:98, lft:40, rl1:30, rl2:-70, lean:-18, lift:66, la1:-30, la2:20 } },
+    grab: { hit:{ la1:86, la2:82, ra1:80, ra2:78, lean:16, hipX:8 } },
+    block: { wind:{ la1:36, la2:170, ra1:20, ra2:175 }, hit:{ la1:44, la2:178, ra1:28, ra2:179, head:8, lean:2 } },
+    parry: { wind:{ la1:42, la2:125 }, hit:{ la1:112, la2:160, lean:6 } },
+    summon_lion: { wind:{ la1:160, la2:172, ra1:150, ra2:165, lean:-8, head:-10 }, hit:{ la1:78, la2:70, ra1:40, ra2:120, lean:10 } },
+    split: { wind:{ la1:70, la2:150, ra1:60, ra2:160, lean:10, ll1:40, ll2:-20, rl1:0, rl2:-40 }, hit:{ la1:115, la2:120, ra1:-115, ra2:-120, lean:0 } },
+    throw_boulder: { wind:{ la1:168, la2:176, ra1:160, ra2:172, lean:-16, head:-6 }, hit:{ la1:100, la2:94, ra1:94, ra2:90, lean:20, hipX:10 } },
+    shoot: { wind:{ ra1:60, ra2:92 }, hit:{ ra1:88, ra2:90, lean:4 } },
+    crouch: { to:'crouching' }, stand: { to:'standing' }, recover: { to:'standing' },
+    getup_quick: { wind:KNEEL }, getup_slow: { wind:KNEEL },
+    getup_roll: { wind:{ lean:-40, head:20, ll1:150, ll2:40, rl1:140, rl2:30, la1:120, la2:150, ra1:110, ra2:140 } },
+    step_fwd: { hit:[{ ll1:32, ll2:18, rl1:-30, rl2:-16 }, { ll1:8, ll2:0, rl1:-10, rl2:-4 }] },
+    step_back: { hit:[{ ll1:30, ll2:20, rl1:-32, rl2:-20, lean:-6 }, { ll1:10, ll2:2, rl1:-12, rl2:-6 }] },
+    dash: { wind:{ lean:18, ll1:40, ll2:-10, rl1:-20, rl2:-40 }, hit:[{ lean:22, ll1:48, ll2:22, rl1:-42, rl2:-70 }, { lean:22, ll1:-14, ll2:-50, rl1:34, rl2:12 }] },
+    jump: { wind:{ ...TUCK, lean:12 }, hit:{ ll1:74, ll2:-20, rl1:34, rl2:-60 } },
+    jump_fwd: { wind:{ ...TUCK, lean:16 }, hit:{ ll1:80, ll2:-10, rl1:20, rl2:-70, lean:14 } },
+  },
+};
+
+const BEAST = { spine:34, neck:13, head:10, upper:15, lower:14, tail:24 };
+const PROWL = { lean:0, neck:122, jaw:0, bodyX:0, lift:0, nf1:6, nf2:-4, ff1:-8, ff2:4, nh1:-6, nh2:8, fh1:10, fh2:-6, tail:-55 };
+const LOW = { lean:-6, neck:98, nf1:48, nf2:-52, ff1:38, ff2:-58, nh1:44, nh2:-64, fh1:32, fh2:-70, tail:-80 };
+const BEAST_POSES = {
+  posture: {
+    standing: PROWL,
+    crouching: { ...PROWL, ...LOW },
+    backfoot: { ...PROWL, lean:10, neck:140, bodyX:-6 },
+    airborne: { ...PROWL, lean:6, neck:104, nf1:112, nf2:118, ff1:100, ff2:108, nh1:-112, nh2:-100, fh1:-122, fh2:-110, tail:-96, lift:40 },
+    grounded: { ...PROWL, neck:96, nf1:86, nf2:92, ff1:80, ff2:88, nh1:86, nh2:92, fh1:80, fh2:88, tail:-92 },
+  },
+  reaction: {
+    stagger: { neck:165, lean:12, jaw:0.6, bodyX:-5 },
+    deflected: { neck:160, lean:8 },
+    blockstun: { bodyX:-4 },
+  },
+  action: {
+    bite: { wind:{ neck:108, jaw:1, bodyX:-5, lean:4 }, hit:{ neck:92, jaw:0.15, bodyX:12, lean:-4 } },
+    claw: { wind:{ nf1:72, nf2:132 }, hit:{ nf1:98, nf2:74, bodyX:6 } },
+    pounce: { wind:LOW, hit:{ jaw:1, lift:34 } },
+    crouch: { to:'crouching' }, stand: { to:'standing' }, recover: { to:'standing' },
+    getup_quick: { wind:{ nf1:30, nf2:-20, ff1:20, ff2:-30 } },
+    getup_roll: { wind:{ ...LOW, lean:-14 } },
+    step_fwd: { hit:[{ nf1:28, ff1:-22, nh1:-28, fh1:22 }, { nf1:-16, ff1:20, nh1:20, fh1:-22 }] },
+    step_back: { hit:[{ nf1:-20, ff1:24, nh1:24, fh1:-20 }, { nf1:16, ff1:-16, nh1:-16, fh1:18 }] },
+    dash: { hit:[{ nf1:50, nf2:30, ff1:-40, nh1:-50, fh1:40, lean:4 }, { nf1:-30, ff1:45, nh1:40, fh1:-45, lean:-4 }] },
+    jump: { wind:LOW }, jump_fwd: { wind:LOW },
+  },
+};
+
+/** Body parts you can point at: which channels move them, and which hit zone they sit in. */
+const PARTS = {
+  human: {
+    head: { ch:[], zone:'head', name:'head' },
+    torso: { ch:[], zone:'body', name:'body' },
+    lead: { ch:['lead'], zone:null, name:'lead arm' },
+    rear: { ch:['rear'], zone:null, name:'rear arm' },
+    legs: { ch:['legs'], zone:'legs', name:'legs' },
+  },
+  beast: {
+    head: { ch:['lead'], zone:'body', name:'jaws' },
+    torso: { ch:[], zone:'body', name:'body' },
+    paws: { ch:['rear'], zone:'legs', name:'front paws' },
+    legs: { ch:['legs'], zone:'legs', name:'hind legs' },
+  },
+};
+const ZONE_PART = { head:'head', body:'torso', legs:'legs' };
+
+const shapeOf = (u) => app.data.characters[u.char]?.shape === 'beast' ? 'beast' : 'human';
+
+/** Phase of the tick that just played out for this action, which is what the figure shows. */
+function shownPhase(inst){
+  const idx = inst.t - 1;
+  if (inst.cancelLeft > 0) return 'cancel';
+  if (idx < inst.windup) return 'windup';
+  if (idx < inst.windup + inst.active) return 'active';
+  return 'recovery';
+}
+
+function poseOf(u){
+  const lib = shapeOf(u) === 'beast' ? BEAST_POSES : HUMAN_POSES;
+  const p = { ...(lib.posture[u.posture] || lib.posture.standing) };
+  for (const inst of u.actions) {
+    const a = lib.action[inst.id];
+    const idx = inst.t - 1;
+    if (!a || idx < 0) continue;
+    const wind = a.to ? lib.posture[a.to] : a.wind;
+    const hits = Array.isArray(a.hit) ? a.hit : a.hit ? [a.hit] : [];
+    if (inst.cancelLeft > 0) { blend(p, wind, 0.35); continue; }
+    if (idx < inst.windup) { blend(p, wind, ((idx + 1) / inst.windup) * (a.to ? 0.6 : 1)); continue; }
+    if (idx < inst.windup + inst.active) {
+      if (!a.to) blend(p, wind, 1);
+      if (hits.length) blend(p, hits[(idx - inst.windup) % hits.length], 1);
+      continue;
+    }
+    // Recovery: the limb comes back a little each tick, so it's still out to be punished.
+    const k = 1 - (idx - inst.windup - inst.active + 1) / (inst.recovery + 1);
+    if (!a.to) blend(p, wind, k);
+    if (hits.length) blend(p, hits[hits.length - 1], k);
+  }
+  if (u.reaction && lib.reaction[u.reaction.kind]) blend(p, lib.reaction[u.reaction.kind], 1);
+  return p;
+}
+
+/** Joint positions in the unit's own frame (x toward the way it faces, y up), feet on the ground. */
+function humanJoints(p){
+  const L = HUMAN;
+  const hip = [p.hipX, 0];
+  const neck = along(hip, 180 - p.lean, L.torso);
+  const head = along(neck, 180 - p.lean - p.head, L.neck);
+  const sh = along(neck, -p.lean, 5);
+  const le = along(sh, p.la1, L.upper), lh = along(le, p.la2, L.fore);
+  const re = along(sh, p.ra1, L.upper), rh = along(re, p.ra2, L.fore);
+  const lk = along(hip, p.ll1, L.thigh), lf = along(lk, p.ll2, L.shin), lt = along(lf, p.ll2 + p.lft, L.foot);
+  const rk = along(hip, p.rl1, L.thigh), rf = along(rk, p.rl2, L.shin), rt = along(rf, p.rl2 + p.rft, L.foot);
+  const j = { hip, neck, head, sh, le, lh, re, rh, lk, lf, lt, rk, rf, rt };
+  const r = { hip:8, neck:8, head:L.head, sh:5, le:4, lh:5, re:4, rh:5, lk:5, lf:4, lt:2, rk:5, rf:4, rt:2 };
+  return settle(j, r, p.lift);
+}
+
+function beastJoints(p){
+  const L = BEAST;
+  const hip = [p.bodyX - L.spine / 2, 0];
+  const sh = along(hip, 90 + p.lean, L.spine);
+  const head = along(sh, p.neck, L.neck);
+  const nk = along(sh, p.nf1, L.upper), np = along(nk, p.nf2, L.lower);
+  const fk = along(sh, p.ff1, L.upper), fp = along(fk, p.ff2, L.lower);
+  const hk = along(hip, p.nh1, L.upper), hp = along(hk, p.nh2, L.lower);
+  const xk = along(hip, p.fh1, L.upper), xp = along(xk, p.fh2, L.lower);
+  const tail = along(hip, p.tail, L.tail);
+  const j = { hip, sh, head, nk, np, fk, fp, hk, hp, xk, xp, tail };
+  const r = { hip:11, sh:11, head:L.head, nk:3, np:3, fk:3, fp:3, hk:3, hp:3, xk:3, xp:3, tail:2 };
+  return settle(j, r, p.lift);
+}
+
+/** Drop the figure until its lowest point touches the ground, then lift it if it's in the air. */
+function settle(j, r, lift){
+  let low = Infinity;
+  for (const k in j) low = Math.min(low, j[k][1] - (r[k] ?? 3));
+  const dy = (lift || 0) - low;
+  for (const k in j) j[k] = [j[k][0], j[k][1] + dy];
+  return j;
+}
+
+/**
+ * SVG for one body. `marks` maps a part to a halo: { color, op, dash }.
+ * Returns the drawing, its hover targets, and anchor points for labels and hit numbers.
+ */
+function drawFigure(v, marks){
+  const u = v.u, beast = v.shape === 'beast';
+  const color = TEAM_COLOR[u.team];
+  const cx = v.sx, face = v.face;
+  const j = beast ? beastJoints(v.pose) : humanJoints(v.pose);
+  const P = (q) => [cx + face * q[0], G - q[1]];
+  const f = (q) => P(q).map((n) => n.toFixed(1)).join(' ');
+  const path = (...qs) => 'M' + qs.map(f).join(' L');
+  const stroke = (d, w, op = 1, extra = '') => `<path d="${d}" fill="none" stroke="${color}" stroke-width="${w}" stroke-opacity="${op}" stroke-linecap="round" stroke-linejoin="round" ${extra}/>`;
+  const joint = (q, op = 1) => { const [x, y] = P(q); return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="var(--surface)" stroke="${color}" stroke-width="1.5" stroke-opacity="${op}"/>`; };
+  const dot = (q, r, fill, op = 1) => { const [x, y] = P(q); return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="${fill}" fill-opacity="${op}"/>`; };
+  const shapes = beast ? {
+    head: { circle: [j.head, BEAST.head + 4] },
+    torso: { d: path(j.hip, j.sh), w: 22 },
+    paws: { d: path(j.sh, j.fk, j.fp) + ' ' + path(j.sh, j.nk, j.np), w: 7 },
+    legs: { d: path(j.hip, j.xk, j.xp) + ' ' + path(j.hip, j.hk, j.hp), w: 8 },
+  } : {
+    head: { circle: [j.head, HUMAN.head] },
+    torso: { d: path(j.hip, j.neck), w: 16 },
+    lead: { d: path(j.sh, j.le, j.lh), w: 8 },
+    rear: { d: path(j.sh, j.re, j.rh), w: 8 },
+    legs: { d: path(j.hip, j.rk, j.rf, j.rt) + ' ' + path(j.hip, j.lk, j.lf, j.lt), w: 10 },
+  };
+  let h = '';
+  // Halos go underneath: what's busy, what's pointed at, what was just hit.
+  for (const part in marks) {
+    const m = marks[part], sh = shapes[part];
+    if (!m || !sh) continue;
+    const dash = m.dash ? `stroke-dasharray="${m.dash}"` : '';
+    if (sh.circle) { const [x, y] = P(sh.circle[0]); h += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${sh.circle[1] + 5}" fill="none" stroke="${m.color}" stroke-width="5" stroke-opacity="${m.op}" ${dash}/>`; }
+    else h += `<path d="${sh.d}" fill="none" stroke="${m.color}" stroke-width="${sh.w + 9}" stroke-opacity="${m.op}" stroke-linecap="round" stroke-linejoin="round" ${dash}/>`;
+  }
+  const far = 0.55;
+  if (beast) {
+    const tailEnd = P(j.tail), hipP = P(j.hip), ctl = P([j.hip[0] - 14, j.hip[1] + 14]);
+    h += `<path d="M${hipP.map((n) => n.toFixed(1)).join(' ')} Q${ctl.map((n) => n.toFixed(1)).join(' ')} ${tailEnd.map((n) => n.toFixed(1)).join(' ')}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round"/>`;
+    h += stroke(path(j.sh, j.fk, j.fp), 7, far) + stroke(path(j.hip, j.xk, j.xp), 8, far);
+    h += stroke(path(j.hip, j.sh), 22);
+    h += dot(j.head, BEAST.head + 3, color, 0.45); // mane
+    const snout = v.pose.neck - 28;
+    h += stroke(path(j.head, along(j.head, snout, 9)), 8);
+    h += stroke(path(j.head, along(j.head, snout - 14 - (v.pose.jaw || 0) * 38, 10)), 4);
+    h += dot(j.head, BEAST.head, color);
+    h += dot(along(j.head, snout + 45, 4), 1.8, 'var(--surface)');
+    h += stroke(path(j.sh, j.nk, j.np), 7) + stroke(path(j.hip, j.hk, j.hp), 8);
+    for (const k of ['sh', 'hip', 'nk', 'hk']) h += joint(j[k]);
+    for (const k of ['fk', 'xk']) h += joint(j[k], far);
+  } else {
+    h += stroke(path(j.hip, j.rk, j.rf, j.rt), 10, far) + stroke(path(j.sh, j.re, j.rh), 8, far) + dot(j.rh, 5, color, far);
+    h += torsoShape(j, P, color);
+    h += dot(j.head, HUMAN.head, color);
+    h += dot(along(j.head, 180 - v.pose.lean - v.pose.head - 62, 7), 2.4, 'var(--surface)');
+    h += stroke(path(j.hip, j.lk, j.lf, j.lt), 10) + stroke(path(j.sh, j.le, j.lh), 8) + dot(j.lh, 5.5, color);
+    for (const k of ['rk', 're']) h += joint(j[k], far);
+    for (const k of ['neck', 'sh', 'hip', 'lk', 'le', 'lf', 'rf']) h += joint(j[k]);
+  }
+  h += props(v, j, P);
+
+  // Hover targets. Busy parts are listed separately so they sit on top.
+  const hits = [];
+  for (const part in shapes) {
+    const sh = shapes[part];
+    const attrs = `class="hit" data-unit="${esc(u.id)}" data-part="${part}"`;
+    const html = sh.circle
+      ? (() => { const [x, y] = P(sh.circle[0]); return `<circle ${attrs} cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${sh.circle[1] + 4}" fill="transparent" stroke="transparent" pointer-events="all"/>`; })()
+      : `<path ${attrs} d="${sh.d}" fill="none" stroke="transparent" stroke-width="${Math.max(18, sh.w + 8)}" stroke-linecap="round" stroke-linejoin="round" pointer-events="stroke"/>`;
+    hits.push({ busy: !!partAction(u, part), html });
+  }
+  const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  const anchors = beast
+    ? { head: P(j.head), body: P(mid(j.hip, j.sh)), legs: P(mid(j.hk, j.nk)) }
+    : { head: P(j.head), body: P(mid(j.hip, j.neck)), legs: P(mid(j.lk, j.rk)) };
+  let top = Infinity;
+  for (const k in j) top = Math.min(top, P(j[k])[1]);
+  anchors.top = top - (beast ? BEAST.head : HUMAN.head);
+  return { svg: h, hits, anchors };
+}
+
+/** A chest that's deeper than the waist, so the body reads as a body and shows its lean. */
+function torsoShape(j, P, color){
+  const [hx, hy] = j.hip, [nx, ny] = j.neck;
+  const len = Math.hypot(nx - hx, ny - hy) || 1;
+  const px = -(ny - hy) / len, py = (nx - hx) / len;
+  const at = (t, w) => [hx + (nx - hx) * t + px * w, hy + (ny - hy) * t + py * w];
+  const pts = [at(0, 6), at(0.8, 10), at(1, 6), at(1, -6), at(0.8, -9), at(0, -6)].map((q) => P(q).map((n) => n.toFixed(1)).join(' '));
+  return `<path d="M${pts.join(' L')} Z" fill="${color}" stroke="${color}" stroke-width="5" stroke-linejoin="round"/>`;
+}
+
+/** Guards, held boulders, the pistol. Drawn from what the unit is doing. */
+function props(v, j, P){
+  const u = v.u, d = app.data;
+  let h = '';
+  const at = (q) => P(q).map((n) => n.toFixed(1));
+  for (const inst of u.actions) {
+    const def = d.actions[inst.id];
+    const phase = shownPhase(inst);
+    const up = phase === 'active' || S.phaseOf(inst) === 'active';
+    if (def.kind === 'block' && up && v.shape === 'human') {
+      // The guard covers head and body standing, body and legs crouching.
+      const low = u.posture === 'crouching';
+      const x = Math.max(j.lh[0], j.rh[0]) + 7;
+      const y0 = low ? j.neck[1] + 2 : j.head[1] + HUMAN.head;
+      const y1 = low ? 0 : j.hip[1] - 2;
+      const [ax, ay] = at([x, y0]), [, by] = at([x, y1]);
+      h += `<rect x="${(ax - 3).toFixed(1)}" y="${Math.min(ay, by)}" width="6" height="${Math.abs(by - ay).toFixed(1)}" rx="3" fill="var(--ink)" fill-opacity="0.45"/>`;
+    }
+    if (def.kind === 'parry' && phase === 'active') {
+      const [x, y] = at(j.lh);
+      h += `<circle cx="${x}" cy="${y}" r="12" fill="none" stroke="var(--ink)" stroke-width="2" stroke-dasharray="4 3"/>`;
+    }
+    if (def.projectile && phase === 'windup' && def.projectile.radius >= 10 && v.shape === 'human') {
+      const c = [(j.lh[0] + j.rh[0]) / 2, (j.lh[1] + j.rh[1]) / 2 + 10];
+      const [x, y] = at(c);
+      h += `<circle cx="${x}" cy="${y}" r="${def.projectile.radius * 0.85}" fill="var(--stone)" stroke="${TEAM_COLOR[u.team]}" stroke-width="2"/>`;
+    }
+    if (def.id === 'shoot' && phase === 'active') {
+      const [x, y] = at(along(j.rh, v.pose.ra2, 16));
+      h += `<circle cx="${x}" cy="${y}" r="5" fill="var(--danger)" fill-opacity="0.8"/>`;
+    }
+  }
+  if (v.shape === 'human' && d.characters[u.char].moves.includes('shoot')) {
+    const [x1, y1] = at(j.rh), [x2, y2] = at(along(j.rh, v.pose.ra2, 11));
+    h += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--ink)" stroke-width="4" stroke-linecap="round"/>`;
+  }
+  return h;
+}
+
+/** The running action that moves this part, if any. */
+function partAction(u, part){
+  const p = PARTS[shapeOf(u)][part];
+  if (!p || !p.ch.length) return undefined;
+  return u.actions.find((i) => app.data.actions[i.id].channels.some((c) => p.ch.includes(c)));
+}
+
+// ---------------------------------------------------------------- stage animation
+
+const TWEEN_MS = 240, POP_MS = 950, FLASH_MS = 420;
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const anim = { shown: null, shownTick: -1, from: new Map(), to: new Map(), t0: 0, dur: 0, raf: 0, timer: 0, pops: [], snap: true };
+const easeOut = (k) => 1 - Math.pow(1 - k, 3);
+
+function visualOf(s, u){
+  if (u.kind === 'object') return { kind: 'object', u, x: u.x, face: u.dir || 1, alpha: 1 };
+  return { kind: 'body', u, shape: shapeOf(u), x: u.x, face: S.facingOf(s, u), pose: poseOf(u), alpha: 1 };
+}
+
+function mixVisual(a, b, k){
+  const out = { ...b, x: lerp(a.x, b.x, k), face: lerp(a.face, b.face, k), alpha: lerp(a.alpha ?? 1, b.alpha ?? 1, k) };
+  if (b.pose) { out.pose = {}; for (const key in b.pose) out.pose[key] = lerp(a.pose?.[key] ?? b.pose[key], b.pose[key], k); }
+  return out;
+}
+
+/** Every unit as it should look right now, part way through the current tween. */
+function visualsAt(now){
+  const k = anim.dur ? easeOut(Math.min(1, (now - anim.t0) / anim.dur)) : 1;
+  const out = new Map();
+  for (const [id, b] of anim.to) {
+    const a = anim.from.get(id);
+    out.set(id, a ? mixVisual(a, b, k) : { ...b, alpha: b.kind === 'object' ? 1 : k });
+  }
+  // Units that just left play (a defeated lion, a boulder that landed) fade out where they were.
+  for (const [id, a] of anim.from) if (!anim.to.has(id) && k < 1) out.set(id, { ...a, alpha: (a.alpha ?? 1) * (1 - k), leaving: true });
+  return out;
+}
+
+/** Draw a state, easing in from whatever is on screen if the state is new. */
+function stageRender(s){
+  const now = performance.now();
+  if (s !== anim.shown) {
+    const forward = !anim.snap && s.tick === anim.shownTick + 1;
+    anim.from = anim.snap ? new Map() : visualsAt(now);
+    anim.to = new Map(s.units.map((u) => [u.id, visualOf(s, u)]));
+    anim.t0 = now;
+    anim.dur = anim.snap || reduceMotion.matches || document.hidden ? 0 : TWEEN_MS;
+    if (anim.snap) anim.pops = [];
+    if (forward) addPops(s, now);
+    anim.shown = s; anim.shownTick = s.tick; anim.snap = false;
+    updateTip();
+  }
+  frame();
+}
+
+function frame(){
+  cancelAnimationFrame(anim.raf);
+  clearTimeout(anim.timer);
+  if (!anim.shown) return;
+  const now = performance.now();
+  anim.pops = anim.pops.filter((p) => now - p.t0 < POP_MS);
+  drawStage(anim.shown, visualsAt(now), now);
+  if (now - anim.t0 < anim.dur || anim.pops.length) {
+    anim.raf = requestAnimationFrame(frame);
+    // Browsers hold back animation frames in hidden or throttled pages; the timer makes sure the tween still finishes.
+    anim.timer = setTimeout(frame, 80);
+  }
+}
+
+/** Damage numbers and notes for what happened on the tick just played. */
+function addPops(s, now){
+  const evs = app.mode === 'watch' ? (app.frames[app.idx]?.events || []) : app.log.filter((e) => e.tick === s.tick);
+  for (const e of evs) {
+    if (e.type === 'hit' || e.type === 'grabbed') anim.pops.push({ t0: now, unit: e.target, zone: e.zone || 'body', text: `−${e.damage}`, kind: 'hit' });
+    else if (e.type === 'blocked') anim.pops.push({ t0: now, unit: e.target, zone: e.zone || 'body', text: `−${e.damage} blocked`, kind: 'block' });
+    else if (e.type === 'parried') anim.pops.push({ t0: now, unit: e.target, zone: e.zone || 'head', text: 'intercepted', kind: 'note' });
+    else if (e.type === 'clash') anim.pops.push({ t0: now, unit: e.unit, zone: 'head', text: 'clash', kind: 'note' });
+    else if (e.type === 'whiff') anim.pops.push({ t0: now, unit: e.unit, zone: 'head', text: 'miss', kind: 'note' });
+  }
+}
+
+function drawStage(s, vis, now){
   const d = app.data, r = d.rules;
   const X = (x) => x * 1000 / r.stageWidth;
   let h = '';
@@ -450,25 +868,79 @@ function drawStage(s){
   }
   h += `<line x1="0" y1="${G}" x2="1000" y2="${G}" stroke="var(--ink)" stroke-width="2"/>`;
   h += `<rect x="0" y="40" width="4" height="${G-40}" fill="var(--muted)"/><rect x="996" y="40" width="4" height="${G-40}" fill="var(--muted)"/>`;
-  const bodies = s.units.filter((u) => u.kind !== 'object');
-  for (const u of bodies) h += reachBoxes(s, u, X);
-  for (const u of bodies) h += drawUnit(s, u, X);
-  for (const o of s.units.filter((u) => u.kind === 'object')) h += drawObject(o, X);
-  const a = S.unitById(s, 'A'), b = S.unitById(s, 'B');
-  h += `<text x="${X((a.x + b.x) / 2)}" y="${G + 34}" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink)">fighters ${Math.round(Math.abs(b.x - a.x))} apart</text>`;
+
+  const tip = app.tipInfo;
+  const bodies = [...vis.values()].filter((v) => v.kind === 'body').sort((a, b) => (b.u.leader - a.u.leader));
+  for (const v of bodies) v.sx = X(v.x);
+  for (const v of bodies) if (!v.leaving) h += reachBoxes(s, v.u, v.sx, Math.sign(v.face) || 1, tip);
+  for (const v of bodies) {
+    const lift = v.pose.lift || 0;
+    h += `<ellipse cx="${v.sx.toFixed(1)}" cy="${G - 2}" rx="${(v.shape === 'beast' ? 30 : 22) * (1 - Math.min(lift, 80) / 160)}" ry="4" fill="var(--ink)" fill-opacity="${0.16 * v.alpha}"/>`;
+  }
+  const figs = new Map();
+  const hitLayer = [];
+  for (const v of bodies) {
+    const u = v.u;
+    const marks = {};
+    for (const part in PARTS[v.shape]) {
+      const inst = partAction(u, part);
+      if (inst) {
+        const ph = shownPhase(inst);
+        marks[part] = { color: TEAM_COLOR[u.team], op: { windup: 0.22, active: 0.5, recovery: 0.14, cancel: 0.1 }[ph], dash: ph === 'windup' ? '5 4' : null };
+      }
+    }
+    if (tip && tip.target === u.id && tip.zone) marks[ZONE_PART[tip.zone]] = { color: 'var(--danger)', op: 0.55, dash: '4 3' };
+    for (const p of anim.pops) {
+      if (p.unit === u.id && p.kind !== 'note' && now - p.t0 < FLASH_MS) marks[ZONE_PART[p.zone]] = { color: 'var(--danger)', op: 0.6 * (1 - (now - p.t0) / FLASH_MS) };
+    }
+    if (app.hover && app.hover.unit === u.id && PARTS[v.shape][app.hover.part]) marks[app.hover.part] = { color: 'var(--ink)', op: 0.28 };
+    const fig = drawFigure(v, marks);
+    figs.set(u.id, fig);
+    const dim = (u.reaction ? 0.8 : 1) * (u.kind === 'summon' ? 0.85 : 1) * v.alpha;
+    h += `<g opacity="${dim.toFixed(2)}">${fig.svg}</g>`;
+    if (!u.leader) h += `<text x="${v.sx.toFixed(1)}" y="${(fig.anchors.top - 8).toFixed(1)}" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="${TEAM_COLOR[u.team]}" opacity="${v.alpha.toFixed(2)}">${esc(u.name)}</text>`;
+    if (!v.leaving) for (const hit of fig.hits) hitLayer.push(hit);
+  }
+  for (const v of vis.values()) if (v.kind === 'object') {
+    h += drawObject(v, X);
+    if (!v.leaving) hitLayer.push({ busy: true, html: objectHit(v, X) });
+  }
+  for (const p of anim.pops) {
+    const fig = figs.get(p.unit);
+    if (!fig) continue;
+    const k = (now - p.t0) / POP_MS;
+    const [x, y] = fig.anchors[p.zone] || fig.anchors.body;
+    const fill = p.kind === 'hit' ? 'var(--danger)' : p.kind === 'block' ? 'var(--ink)' : 'var(--muted)';
+    h += `<text x="${x.toFixed(1)}" y="${(y - 18 - 26 * k).toFixed(1)}" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="${p.kind === 'hit' ? 17 : 13}" font-weight="600" fill="${fill}" stroke="var(--surface)" stroke-width="3" paint-order="stroke" opacity="${(1 - k * k).toFixed(2)}">${esc(p.text)}</text>`;
+  }
+  const a = vis.get('A'), b = vis.get('B');
+  if (a && b) h += `<text x="${X((a.x + b.x) / 2)}" y="${G + 34}" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink)">fighters ${Math.round(Math.abs(S.unitById(s, 'B').x - S.unitById(s, 'A').x))} apart</text>`;
+  // Hover targets last, busy parts on top so a limb that's mid-action is easy to point at.
+  h += `<g>${hitLayer.filter((x) => !x.busy).map((x) => x.html).join('')}${hitLayer.filter((x) => x.busy).map((x) => x.html).join('')}</g>`;
   const svg = $('stage');
   svg.innerHTML = h;
-  if (svg.getBoundingClientRect().width < 640) {
-    const cx = X((a.x + b.x) / 2);
-    svg.setAttribute('viewBox', `${Math.max(0, Math.min(500, cx - 250))} 60 500 244`);
-  } else svg.setAttribute('viewBox', '0 0 1000 300');
-  svg.setAttribute('aria-label', `Arena at tick ${s.tick}: ` + bodies.map((u) => `${label(u.id)} at ${Math.round(u.x)}, ${u.posture}`).join('; '));
+  svg.setAttribute('viewBox', camera(bodies, X).join(' '));
+  svg.setAttribute('aria-label', `Arena at tick ${s.tick}: ` + s.units.filter((u) => u.kind !== 'object').map((u) => `${label(u.id)} at ${Math.round(u.x)}, ${u.posture}`).join('; '));
 }
 
-function reachBoxes(s, u, X){
+/**
+ * Follow the fight: frame every body with room to spare, never past the walls.
+ * The frame keeps one shape so the page doesn't jump; zooming out adds sky.
+ */
+function camera(bodies, X){
+  const [minW, aspect, pad] = app.narrow ? [360, 360 / 256, 200] : [700, 700 / 260, 380];
+  const xs = bodies.filter((v) => !v.leaving).map((v) => v.sx);
+  const lo = Math.min(...xs), hi = Math.max(...xs);
+  const w = Math.min(1000, Math.max(minW, hi - lo + pad));
+  const x0 = Math.max(-8, Math.min(1008 - w, (lo + hi) / 2 - w / 2));
+  const h = w / aspect;
+  return [x0, 304 - h, w, h].map((n) => +n.toFixed(1));
+}
+
+function reachBoxes(s, u, sx, dir, tip){
   const d = app.data;
-  const dir = S.facingOf(s, u);
   const color = TEAM_COLOR[u.team];
+  const X = (dx) => sx + dx * 1000 / d.rules.stageWidth;
   let h = '';
   for (const inst of u.actions) {
     const def = d.actions[inst.id];
@@ -478,74 +950,41 @@ function reachBoxes(s, u, X){
     const until = S.ticksUntilActive(inst);
     const coming = !wasLive && until !== null && inst.t <= inst.windup;
     if (!wasLive && !coming) continue;
+    const pointed = tip && tip.unit === u.id && tip.uid === inst.uid;
     const [y0, y1] = BANDS[def.hit.zone];
-    const xa = X(u.x + dir * def.hit.reach[0]), xb = X(u.x + dir * def.hit.reach[1]);
+    const xa = X(dir * def.hit.reach[0]), xb = X(dir * def.hit.reach[1]);
     const x0 = Math.min(xa, xb), w = Math.abs(xb - xa);
+    const sw = pointed ? 2.5 : 1.5;
     h += wasLive
-      ? `<rect x="${x0}" y="${y0}" width="${w}" height="${y1-y0}" fill="${color}" fill-opacity="0.18" stroke="${color}" stroke-width="1.5"/>`
-      : `<rect x="${x0}" y="${y0}" width="${w}" height="${y1-y0}" fill="none" stroke="${color}" stroke-width="1.5" stroke-dasharray="5 4"/>`;
+      ? `<rect x="${x0}" y="${y0}" width="${w}" height="${y1-y0}" fill="${color}" fill-opacity="${pointed ? 0.28 : 0.14}" stroke="${color}" stroke-width="${sw}"/>`
+      : `<rect x="${x0}" y="${y0}" width="${w}" height="${y1-y0}" fill="${color}" fill-opacity="${pointed ? 0.12 : 0}" stroke="${color}" stroke-width="${sw}" stroke-dasharray="5 4"/>`;
     h += `<text x="${x0 + w/2}" y="${y0 - 5}" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="${color}">${esc(wasLive ? def.name : `${def.name} in ${until + 1}`)}</text>`;
   }
   return h;
 }
 
-function drawUnit(s, u, X){
-  const d = app.data;
-  const ch = d.characters[u.char];
-  const dir = S.facingOf(s, u);
-  const x = X(u.x);
-  const color = TEAM_COLOR[u.team];
-  const summon = u.kind === 'summon';
-  const fillOp = summon ? 0.62 : 1;
-  const outline = summon ? `stroke="${color}" stroke-width="1.5" stroke-dasharray="4 3"` : '';
-  let h = `<g opacity="${u.reaction ? 0.55 : 1}">`;
-  if (u.posture === 'grounded') {
-    h += `<rect x="${x - 58}" y="${G - 20}" width="116" height="20" rx="4" fill="${color}" fill-opacity="${fillOp}" ${outline}/>`;
-  } else if (ch.shape === 'beast') {
-    const lift = u.posture === 'airborne' ? 50 : u.posture === 'crouching' ? -10 : 0;
-    const y = G - 58 - lift;
-    // Drawn inside the same 40-wide body every unit collides with.
-    h += `<rect x="${x - 24}" y="${y + 4}" width="48" height="28" rx="9" fill="${color}" fill-opacity="${fillOp}" ${outline}/>`;
-    h += `<rect x="${x + dir * 18 - 11}" y="${y - 14}" width="22" height="22" rx="6" fill="${color}" fill-opacity="${fillOp}" ${outline}/>`;
-    h += `<rect x="${x + dir * 22 - 2}" y="${y - 8}" width="4" height="5" rx="1" fill="var(--surface)"/>`;
-    for (const off of [-18, -7, 7, 18]) h += `<rect x="${x + off - 3}" y="${y + 30}" width="6" height="${G - (y + 30)}" rx="2" fill="${color}" fill-opacity="${fillOp * 0.8}"/>`;
-  } else {
-    const z = zonesFor(u.posture);
-    const lean = u.posture === 'backfoot' ? -dir * 10 : 0;
-    h += `<g transform="translate(${lean} 0)">`;
-    h += `<rect x="${x - 16}" y="${z.legs[0]}" width="32" height="${z.legs[1]-z.legs[0]}" rx="3" fill="${color}" fill-opacity="${0.75 * fillOp}" ${outline}/>`;
-    h += `<rect x="${x - 20}" y="${z.body[0]}" width="40" height="${z.body[1]-z.body[0]}" rx="4" fill="${color}" fill-opacity="${fillOp}" ${outline}/>`;
-    h += `<rect x="${x - 14}" y="${z.head[0]}" width="28" height="${z.head[1]-z.head[0]}" rx="6" fill="${color}" fill-opacity="${fillOp}" ${outline}/>`;
-    h += `<rect x="${x + dir * 6 - 2}" y="${z.head[0] + 9}" width="5" height="6" rx="1" fill="var(--surface)"/>`;
-    for (const inst of u.actions) {
-      const def = d.actions[inst.id];
-      const last = inst.t - 1;
-      if (!(last >= inst.windup && last < inst.windup + inst.active)) continue;
-      if (def.kind === 'block') {
-        const top = u.posture === 'crouching' ? z.body[0] : z.head[0];
-        const bot = u.posture === 'crouching' ? z.legs[1] : z.body[1];
-        h += `<rect x="${x + dir * 26 - 3}" y="${top}" width="7" height="${bot - top}" rx="2" fill="var(--ink)" fill-opacity="0.75"/>`;
-      }
-      if (def.kind === 'parry') h += `<rect x="${x + dir * 26 - 3}" y="${z.head[0]}" width="7" height="${z.body[0] - z.head[0] + 22}" rx="2" fill="none" stroke="var(--ink)" stroke-width="2"/>`;
-    }
-    if (u.posture === 'airborne') h += `<ellipse cx="${x}" cy="${G - 2}" rx="22" ry="4" fill="var(--ink)" fill-opacity="0.15"/>`;
-    h += `</g>`;
-  }
-  if (!u.leader) h += `<text x="${x}" y="${G - (ch.shape === 'beast' ? 80 : 158)}" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="${color}">${esc(u.name)}</text>`;
+function drawObject(v, X){
+  const o = v.u;
+  const p = app.data.actions[o.char].projectile;
+  const [y0, y1] = BANDS[p.impact.zone];
+  const y = (y0 + y1) / 2, x = X(v.x);
+  const color = TEAM_COLOR[o.team];
+  const dir = o.dir || 1;
+  const pointed = app.hover && app.hover.obj === o.id;
+  let h = `<g opacity="${v.alpha.toFixed(2)}">`;
+  if (pointed) h += `<circle cx="${x}" cy="${y}" r="${Math.max(p.radius, 8) + 7}" fill="none" stroke="var(--ink)" stroke-width="5" stroke-opacity="0.28"/>`;
+  h += p.radius >= 10
+    ? `<circle cx="${x}" cy="${y}" r="${p.radius}" fill="var(--stone)" stroke="${color}" stroke-width="2"/>`
+    : `<rect x="${x - 8}" y="${y - 2}" width="16" height="4" rx="2" fill="var(--ink)"/>`;
+  h += `<line x1="${x - dir * (p.radius + 6)}" y1="${y}" x2="${x - dir * (p.radius + 34)}" y2="${y}" stroke="${color}" stroke-width="1.5" stroke-dasharray="3 4"/>`;
+  h += `<text x="${x}" y="${y - p.radius - 6}" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--muted)">${esc(p.name)}</text>`;
   return h + `</g>`;
 }
 
-function drawObject(o, X){
-  const p = app.data.actions[o.char].projectile;
+function objectHit(v, X){
+  const p = app.data.actions[v.u.char].projectile;
   const [y0, y1] = BANDS[p.impact.zone];
-  const y = (y0 + y1) / 2, x = X(o.x);
-  const color = TEAM_COLOR[o.team];
-  let h = p.radius >= 10
-    ? `<circle cx="${x}" cy="${y}" r="${p.radius}" fill="var(--stone)" stroke="${color}" stroke-width="2"/>`
-    : `<rect x="${x - 8}" y="${y - 2}" width="16" height="4" rx="2" fill="var(--ink)"/>`;
-  h += `<line x1="${x - (o.dir || 1) * (p.radius + 6)}" y1="${y}" x2="${x - (o.dir || 1) * (p.radius + 34)}" y2="${y}" stroke="${color}" stroke-width="1.5" stroke-dasharray="3 4"/>`;
-  h += `<text x="${x}" y="${y - p.radius - 6}" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--muted)">${esc(p.name)}</text>`;
-  return h;
+  return `<circle class="hit" data-obj="${esc(v.u.id)}" cx="${X(v.x)}" cy="${(y0 + y1) / 2}" r="${Math.max(p.radius, 10) + 6}" fill="transparent" pointer-events="all"/>`;
 }
 
 function reactionText(r){
@@ -578,7 +1017,10 @@ function drawUnits(s){
         const k = i < inst.windup ? 'w' : i < inst.windup + inst.active ? 'a' : 'r';
         return `<i class="${k}${i < inst.t ? ' done' : i === inst.t ? ' now' : ''}"></i>`;
       }).join('');
-      return `<div class="act"><span class="nm">${esc(def.name)}</span><span class="st">${esc(phaseText(inst, def))}</span><div class="cells">${cells}</div></div>`;
+      const f = S.forecastAction(s, u.id, inst.uid, d);
+      const fc = f && f.ticksUntilActive !== null
+        ? `<span class="fc">${f.damage} clean · ${f.blockable ? `${f.blockedDamage} through a block` : 'goes through blocks'}${f.target ? ` · ${f.kind === 'projectile' ? 'heading for' : f.inReach ? 'reaches' : 'out of reach of'} ${esc(nameIn(f.target))}` : ''}</span>` : '';
+      return `<div class="act"><span class="nm">${esc(def.name)}</span><span class="st">${esc(phaseText(inst, def))}</span><div class="cells">${cells}</div>${fc}</div>`;
     }).join('') : `<p class="empty">No actions running.</p>`;
     const tags = [`<span class="tag">${u.posture}</span>`];
     if (u.reaction) tags.push(`<span class="tag warn">${esc(reactionText(u.reaction))}</span>`);
@@ -738,6 +1180,163 @@ function drawLog(events){
   }).join('') : `<li><span class="t"></span><span class="minor">No events yet.</span></li>`;
 }
 
+// ---------------------------------------------------------------- pointing at a part
+
+/** "Your" / "AI's" / "Your lion's", for naming a body part. */
+function whose(id){
+  const n = app.names[id];
+  if (!n) return id;
+  if (n.leader) return TEAM_NAMES[app.mode][n.team][1];
+  return `${label(id)}'s`;
+}
+/** Name as it reads mid-sentence: "you", "AI", "your lion". */
+function nameIn(id){
+  const t = label(id);
+  return t === 'You' ? 'you' : t.startsWith('Your ') ? 'y' + t.slice(1) : t;
+}
+const isYou = (id) => label(id) === 'You';
+/** Pick the verb form for a name: verb(id, 'block', 'blocks'). */
+const verb = (id, plain, third) => isYou(id) ? plain : third;
+
+function reactionWords(r, staggerTicks, blocked){
+  if (r.kind === 'knockdown') return 'knocks down';
+  if (r.kind === 'thrown') return 'throws down';
+  if (r.kind === 'backfoot') return `back foot, ${r.ticks} ticks`;
+  return `${blocked ? 'blockstun' : 'stagger'} ${staggerTicks ?? r.ticks}`;
+}
+
+function damageGrid(f){
+  return `<div class="tip-dmg">
+    <div><small>Clean hit</small><b>${f.damage}</b><small>${esc(reactionWords(f.onHit, f.hitStagger))}</small></div>
+    <div><small>If blocked</small><b>${f.blockable ? f.blockedDamage : f.damage}</b><small>${f.blockable ? esc(reactionWords(f.onBlock, null, true)) : 'goes through blocks'}</small></div>
+  </div>
+  <p class="tip-muted">Answers: ${esc(S.answersFor(f.kind, f.zone, f.weight).join(', '))}</p>`;
+}
+
+function aimLine(f){
+  if (!f.target) return `<p class="tip-muted">Nobody in front of it.</p>`;
+  const where = `${f.zone === 'body' ? 'body' : f.zone}`;
+  const w = whose(f.target), who = w.startsWith('Your') ? 'y' + w.slice(1) : w;
+  if (f.kind === 'projectile') return `<p>First in its path: ${esc(who)} ${where}, ${Math.round(f.distance)} away.</p>`;
+  const reach = f.reach ? ` (reach ${f.reach[0]}–${f.reach[1]})` : '';
+  return `<p>At ${esc(who)} ${where}, ${Math.round(f.distance)} away · <b class="${f.inReach ? 'ok' : 'warn'}">${f.inReach ? 'in reach' : 'out of reach'}</b>${reach}</p>`;
+}
+
+function playOutLine(po, f){
+  if (!po) return '';
+  const t = po.target, on = `on tick ${po.tick}`;
+  let text;
+  switch (po.result) {
+    case 'hit': text = `it hits ${nameIn(t)} for ${po.damage} ${on}.`; break;
+    case 'blocked': text = `${nameIn(t)} ${verb(t, 'block', 'blocks')} it and ${verb(t, 'take', 'takes')} ${po.damage} ${on}.`; break;
+    case 'grabbed': text = `it throws ${nameIn(t)} for ${po.damage} ${on}.`; break;
+    case 'intercepted': text = `${nameIn(t)} ${verb(t, 'intercept', 'intercepts')} it ${on}, and the attacker is staggered.`; break;
+    case 'clash': text = `it meets a strike head on and neither lands (tick ${po.tick}).`; break;
+    case 'missed': text = `it misses ${on}${po.detail ? ` (${po.detail})` : ''}.`; break;
+    case 'interrupted': text = `${nameIn(f.source)} ${verb(f.source, 'get', 'gets')} hit first and it never lands.`; break;
+    default: text = f.kind === 'projectile' ? 'it leaves play without hitting anyone.' : 'it lands on nobody.';
+  }
+  return `<p class="tip-out">If nobody commits anything new, ${esc(text)}</p>`;
+}
+
+function actionBlock(s, u, inst){
+  const d = app.data, def = d.actions[inst.id];
+  let h = `<div class="tip-act"><div class="tip-row"><b>${esc(def.name)}</b><span>${esc(phaseText(inst, def))}</span></div>`;
+  const f = S.forecastAction(s, u.id, inst.uid, d);
+  if (!f) return h + `<p class="tip-muted">${esc(def.description)}</p></div>`;
+  if (!app.tipInfo) app.tipInfo = { unit: u.id, uid: inst.uid, target: f.ticksUntilActive === null ? null : f.target, zone: f.zone };
+  if (f.ticksUntilActive === null) {
+    const left = S.ticksLeft(inst);
+    const note = def.projectile && inst.cancelLeft === 0 ? 'Already thrown; point at it in flight.'
+      : inst.cancelLeft > 0 ? 'Being cancelled.'
+      : `Its strike is over. Open to a counter for ${left} more tick${left === 1 ? '' : 's'}.`;
+    return h + `<p class="tip-muted">${note}</p>${damageGrid(f)}</div>`;
+  }
+  return h + damageGrid(f) + aimLine(f) + playOutLine(f.playOut, f) + `</div>`;
+}
+
+function incomingBlock(s, u, zone){
+  const list = S.threatsAgainst(s, u.id, app.data).filter((t) => t.zone === zone);
+  if (!list.length) return '';
+  return `<div class="tip-act"><div class="tip-row"><b>Coming at it</b></div>` + list.slice(0, 3).map((t) => {
+    const when = t.ticksUntilActive === 0 ? 'lands next tick' : `lands in ${t.ticksUntilActive + 1} ticks`;
+    const blocked = t.kind === 'grab' ? 'goes through blocks' : `${t.blockedDamage} if blocked`;
+    return `<p><b class="${t.inReach ? 'warn' : ''}">${esc(t.name)}</b> from ${esc(nameIn(t.source))} · ${when}${t.inReach ? '' : ' · out of reach'} · ${t.damage} damage, ${blocked}</p>`;
+  }).join('') + `</div>`;
+}
+
+/** Rebuild the hover card for whatever is pointed at. */
+function updateTip(){
+  const tip = $('tip');
+  const s = anim.shown, h = app.hover;
+  app.tipInfo = null;
+  if (!h || !s) { tip.hidden = true; return; }
+  const d = app.data;
+  let html = '', color;
+  if (h.obj) {
+    const o = S.unitById(s, h.obj);
+    const f = o && S.forecastObject(s, o.id, d);
+    if (!f) { tip.hidden = true; return; }
+    color = TEAM_COLOR[o.team];
+    app.tipInfo = { unit: o.id, target: f.target, zone: f.zone };
+    const p = d.actions[o.char].projectile;
+    html = `<div class="tip-h"><b>${esc(p.name)}</b><span>thrown by ${esc(nameIn(o.owner))}</span></div>
+      <p class="tip-muted">Flies ${p.speed} a tick at ${p.impact.zone} height and hits the first body in its path, friend or foe.</p>
+      ${damageGrid(f)}${aimLine(f)}${playOutLine(f.playOut, f)}`;
+  } else {
+    const u = S.unitById(s, h.unit);
+    const part = u && PARTS[shapeOf(u)][h.part];
+    if (!part) { tip.hidden = true; return; }
+    color = TEAM_COLOR[u.team];
+    const insts = u.actions.filter((i) => d.actions[i.id].channels.some((c) => part.ch.includes(c)));
+    const state = u.reaction ? reactionText(u.reaction) : u.posture;
+    html = `<div class="tip-h"><b>${esc(whose(u.id))} ${part.name}</b><span>${esc(state)}</span></div>`;
+    html += insts.map((i) => actionBlock(s, u, i)).join('');
+    const incoming = part.zone ? incomingBlock(s, u, part.zone) : '';
+    html += incoming;
+    if (!insts.length && !incoming) {
+      html += `<p class="tip-muted">${part.ch.length ? 'Free: not doing anything.' : 'Nothing is aimed here right now.'}${part.zone ? ` Hits here count as ${part.zone} hits.` : ''}</p>`;
+    }
+  }
+  if (app.pinned) html += `<p class="tip-muted tip-foot">Pinned. Tap or click the stage to close.</p>`;
+  tip.innerHTML = html;
+  tip.style.setProperty('--c', color);
+  tip.classList.toggle('pinned', !!app.pinned);
+  tip.hidden = false;
+  placeTip();
+}
+
+function placeTip(){
+  const tip = $('tip');
+  if (tip.hidden || getComputedStyle(tip).position !== 'absolute') return;
+  const box = tip.parentElement;
+  const W = box.clientWidth, H = box.clientHeight;
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  const at = app.tipAt || { x: 16, y: 16 };
+  let x = at.x + 16, y = at.y + 16;
+  if (x + w > W - 8) x = Math.max(8, at.x - w - 16);
+  if (y + h > H - 8) y = Math.max(8, H - h - 8);
+  tip.style.left = `${x}px`;
+  tip.style.top = `${y}px`;
+}
+
+function pointedAt(e){
+  const t = e.target.closest && e.target.closest('[data-part],[data-obj]');
+  if (!t) return null;
+  return t.dataset.obj ? { obj: t.dataset.obj } : { unit: t.dataset.unit, part: t.dataset.part };
+}
+const samePoint = (a, b) => (a?.unit === b?.unit && a?.part === b?.part && a?.obj === b?.obj);
+function setPointer(e){
+  const box = $('arena').getBoundingClientRect();
+  app.tipAt = { x: e.clientX - box.left, y: e.clientY - box.top };
+}
+function point(h, pinned){
+  app.hover = h;
+  app.pinned = !!(h && pinned);
+  updateTip();
+  frame();
+}
+
 // ---------------------------------------------------------------- events
 
 $('modePlay').addEventListener('click', () => setMode('play'));
@@ -794,6 +1393,7 @@ $('loadReplay').addEventListener('change', async (e) => {
     app.mode = 'watch';
     for (const [id, m] of [['modePlay','play'],['modeHot','hot'],['modeWatch','watch']]) $(id).setAttribute('aria-pressed', String(m === 'watch'));
     app.replay = rep; app.data = rep.data; app.chars = rep.chars; app.frames = rep.frames; app.idx = 0; app.names = {};
+    app.hover = null; app.pinned = false; anim.snap = true;
     for (const f of app.frames) remember(f.state);
     fillSelects();
     stopPlay();
@@ -803,7 +1403,23 @@ $('loadReplay').addEventListener('change', async (e) => {
   }
   e.target.value = '';
 });
+$('stage').addEventListener('pointermove', (e) => {
+  if (e.pointerType === 'touch' || app.pinned) return;
+  setPointer(e);
+  const h = pointedAt(e);
+  if (!samePoint(h, app.hover)) point(h, false); else placeTip();
+});
+$('stage').addEventListener('pointerleave', () => { if (!app.pinned && app.hover) point(null, false); });
+// A click or tap pins the card so it can be read while the fight moves; another click closes it.
+$('stage').addEventListener('click', (e) => {
+  setPointer(e);
+  const h = pointedAt(e);
+  point(h && !(app.pinned && samePoint(h, app.hover)) ? h : null, true);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && app.hover) point(null, false); });
 window.addEventListener('resize', () => render());
+// Animation frames stop while the page is hidden; catch up when it's shown again.
+document.addEventListener('visibilitychange', () => { if (!document.hidden) frame(); });
 
 fillSelects();
 newMatch();

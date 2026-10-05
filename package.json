@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "esbuild src/browser.ts --bundle --format=iife --global-name=TickSim --outfile=viewer/sim.bundle.js --servedir=viewer --serve=8000 --watch=forever",
     "sim": "tsx src/cli/batch.ts",
-    "test": "node --import tsx --test test/engine.test.ts test/ai.test.ts",
+    "test": "node --import tsx --test test/engine.test.ts test/query.test.ts test/ai.test.ts",
     "typecheck": "tsc --noEmit",
     "build:viewer": "esbuild src/browser.ts --bundle --format=iife --global-name=TickSim --outfile=viewer/sim.bundle.js",
     "check": "npm run typecheck && npm test"

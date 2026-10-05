@@ -15,7 +15,7 @@ You need [Node.js](https://nodejs.org) 20 or newer.
 
 ```bash
 npm install
-npm run check       # typecheck and 37 rule tests
+npm run check       # typecheck, the rule tests, and the forecast tests
 npm run dev         # the viewer at http://localhost:8000
 npm run sim         # 500 AI-vs-AI matches, Fighter vs Fighter
 ```
@@ -49,6 +49,13 @@ file, so refresh to see a change. To open the viewer straight from disk instead,
 
 *Coming at…* lists everything heading for the selected unit: strikes, grabs, throws still being wound up, and objects in flight. For each one it shows when it lands, the damage, and what answers it. Point at any action to read its description.
 
+**The stage.** Every body is a jointed figure: head, chest, two arms and two legs, with a dot at each joint (the lion has four legs, jaws and a tail). The far-side arm and leg are drawn fainter. A figure's pose comes from its posture and from where each of its actions is: an arm pulls back during a wind-up, snaps out on the active tick, and comes back a little on each recovery tick. When a tick plays out, the figures move smoothly into their new pose and position, and damage numbers rise from whoever was hit. The view follows the fighters and zooms out when they're far apart.
+
+- A limb that's busy has a halo: dashed while it winds up, solid while it's active, faint while it recovers.
+- **Point at a body part** (tap it on a phone) to see what it's doing. For an attack it shows the damage clean and through a block, the stagger it causes, what answers it, whether it reaches its target, and what happens if nobody commits anything new. That last line runs the real engine forward, so it's exactly what the rules would do. Point at a head, body or legs to see what's coming at that spot. Point at a boulder or bullet in flight to see where it will land.
+- Clicking or tapping pins the card so you can read it while the fight moves; click the stage again (or press Escape) to close it.
+- The unit cards show the same damage forecast in one line under each attack.
+
 ## Batch simulator
 
 ```bash
@@ -74,11 +81,11 @@ seed always gives the same results.
 | `src/sim/data.ts` | **All tuning:** moves (each with a description), characters, rules. Start here. |
 | `src/sim/types.ts` | The data shapes, with comments on every field. |
 | `src/sim/engine.ts` | `step()`: one tick of the game. Pure and deterministic. |
-| `src/sim/query.ts` | Public information for the AI and the viewer (what's coming at a unit). |
+| `src/sim/query.ts` | Public information for the AI and the viewer: what's coming at a unit, and the damage forecast for any attack or object. |
 | `src/ai/controllers.ts` | The *reader* AI (rule-based, commands every unit on its team), plus *random* and *idle*. |
 | `src/sim/match.ts` | Runs one match. |
 | `src/cli/batch.ts` | The batch simulator. |
-| `test/` | One test per rule from the design doc. |
+| `test/` | One test per rule from the design doc (`engine.test.ts`), checks that forecasts match what the engine deals (`query.test.ts`), and AI checks. |
 
 ### What happens in one tick (`step()`)
 

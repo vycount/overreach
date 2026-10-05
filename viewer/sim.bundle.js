@@ -36,6 +36,8 @@ var TickSim = (() => {
     dodges: () => dodges,
     durations: () => durations,
     facingOf: () => facingOf,
+    forecastAction: () => forecastAction,
+    forecastObject: () => forecastObject,
     isBody: () => isBody,
     leaderOf: () => leaderOf,
     legalCancels: () => legalCancels,
@@ -1193,25 +1195,27 @@ var TickSim = (() => {
   function threatsAgainst(s, unitId, data) {
     const me = unitById(s, unitId);
     if (!me || !isBody(me)) return [];
-    const r = data.rules;
     const out = [];
     const bodies = s.units.filter(isBody);
-    const firstAhead = (x, dir, skip) => bodies.filter((v) => v.id !== skip && (v.x - x) * dir > 0).sort((a, b) => (a.x - x) * dir - (b.x - x) * dir)[0];
-    const push2 = (src, action, name, kind, impact, until, inReach, power) => out.push({
-      source: src.id,
-      sourceName: src.name,
-      action,
-      name,
-      kind,
-      zone: impact.zone,
-      weight: impact.weight,
-      ticksUntilActive: until,
-      inReach,
-      damage: Math.round(impact.damage * power * r.zoneDamage[impact.zone]),
-      blockedDamage: Math.round(impact.damage * power * (1 - r.blockReduction[impact.weight])),
-      onHit: impact.onHit,
-      answers: answersFor(kind, impact.zone, impact.weight)
-    });
+    const firstAhead = (x, dir, skip) => firstBodyAhead(s, x, dir, skip);
+    const push2 = (src, action, name, kind, impact, until, inReach, power) => {
+      const f = forecastImpact(impact, power, kind, data);
+      out.push({
+        source: src.id,
+        sourceName: src.name,
+        action,
+        name,
+        kind,
+        zone: impact.zone,
+        weight: impact.weight,
+        ticksUntilActive: until,
+        inReach,
+        damage: f.damage,
+        blockedDamage: f.blockedDamage,
+        onHit: impact.onHit,
+        answers: answersFor(kind, impact.zone, impact.weight)
+      });
+    };
     for (const e of bodies) {
       if (e.team === me.team) continue;
       const dir = facingOf(s, e);
@@ -1223,12 +1227,7 @@ var TickSim = (() => {
         if ((def.kind === "strike" || def.kind === "grab") && def.hit && !inst.hasHit) {
           const mine = bodies.filter((v) => v.team === me.team && (v.x - e.x) * dir >= 0).sort((a, b) => Math.abs(a.x - e.x) - Math.abs(b.x - e.x))[0];
           if (!mine || mine.id !== me.id) continue;
-          const total = Math.round((def.move ?? 0) * ch.moveMul);
-          const span = inst.windup + inst.active;
-          const hitIdx = Math.max(inst.t, inst.windup);
-          const movedAtHit = span > 0 ? Math.round(total * (Math.min(hitIdx, span - 1) + 1) / span) : 0;
-          const projected = Math.max(r.bodyWidth, Math.abs(me.x - e.x) - (movedAtHit - inst.movedSoFar));
-          const inReach = projected >= def.hit.reach[0] - 5 && projected <= def.hit.reach[1] + 5;
+          const inReach = withinReach(distanceAtHit(e, inst, def, me, data), def.hit.reach);
           push2(e, def.id, def.name, def.kind, def.hit, until, inReach, ch.power);
         }
         if (def.projectile && inst.t <= inst.windup && phaseOf(inst) !== "cancel") {
@@ -1236,9 +1235,7 @@ var TickSim = (() => {
           const releaseX = e.x + dir * p.offset;
           const first = firstAhead(releaseX - dir * p.radius, dir, e.id);
           if (!first || first.id !== me.id) continue;
-          const gap = Math.max(0, Math.abs(me.x - releaseX) - r.bodyWidth / 2 - p.radius);
-          const travel = Math.max(1, Math.ceil(gap / p.speed));
-          push2(e, def.id, `${p.name} (${def.name})`, "projectile", p.impact, until + travel, true, 1);
+          push2(e, def.id, `${p.name} (${def.name})`, "projectile", p.impact, until + flightTicks(releaseX, me, p.speed, p.radius, data), true, 1);
         }
       }
     }
@@ -1248,9 +1245,7 @@ var TickSim = (() => {
       const dir = o.dir ?? 1;
       const first = firstAhead(o.x - dir * p.radius, dir, o.owner);
       if (!first || first.id !== me.id) continue;
-      const gap = Math.max(0, Math.abs(me.x - o.x) - r.bodyWidth / 2 - p.radius);
-      const arrive = Math.max(1, Math.ceil(gap / p.speed));
-      push2(o, o.char, p.name, "projectile", p.impact, arrive - 1, true, 1);
+      push2(o, o.char, p.name, "projectile", p.impact, flightTicks(o.x, me, p.speed, p.radius, data) - 1, true, 1);
     }
     return out.sort((a, b) => a.ticksUntilActive - b.ticksUntilActive);
   }
@@ -1276,6 +1271,137 @@ var TickSim = (() => {
       if (phaseOf(inst) === "recovery") worst = Math.max(worst, inst.windup + inst.active + inst.recovery - inst.t);
     }
     return worst;
+  }
+  function forecastImpact(impact, power, kind, data) {
+    const r = data.rules;
+    const base2 = impact.damage * power;
+    const grab = kind === "grab";
+    return {
+      zone: impact.zone,
+      weight: impact.weight,
+      damage: Math.round(grab ? base2 : base2 * r.zoneDamage[impact.zone]),
+      blockedDamage: Math.round(base2 * (1 - r.blockReduction[impact.weight])),
+      blockable: !grab,
+      interceptable: kind === "strike" && impact.weight !== "heavy" && impact.zone !== "legs",
+      onHit: impact.onHit,
+      onBlock: impact.onBlock ?? r.blockstun[impact.weight],
+      hitStagger: impact.onHit.kind === "stagger" || impact.onHit.kind === "backfoot" ? impact.onHit.ticks + r.zoneStagger[impact.zone] : null
+    };
+  }
+  function forecastAction(s, unitId, uid, data) {
+    const u = unitById(s, unitId);
+    const inst = u?.actions.find((i) => i.uid === uid);
+    if (!u || !inst) return null;
+    const def = data.actions[inst.id];
+    const until = ticksUntilActive(inst);
+    const dir = facingOf(s, u);
+    if (def.hit && (def.kind === "strike" || def.kind === "grab")) {
+      const target = s.units.filter((v) => isBody(v) && v.team !== u.team && (v.x - u.x) * dir >= 0).sort((a, b) => Math.abs(a.x - u.x) - Math.abs(b.x - u.x))[0];
+      const live = until !== null && !inst.hasHit;
+      return {
+        ...forecastImpact(def.hit, charOf(u, data).power, def.kind, data),
+        source: u.id,
+        action: def.id,
+        name: def.name,
+        kind: def.kind,
+        ticksUntilActive: live ? until : null,
+        reach: def.hit.reach,
+        target: target?.id,
+        distance: target ? Math.abs(target.x - u.x) : void 0,
+        inReach: target ? withinReach(distanceAtHit(u, inst, def, target, data), def.hit.reach) : void 0,
+        playOut: live ? playOut(s, u.id, inst.uid, def.id, data) : null
+      };
+    }
+    if (def.projectile) {
+      const p = def.projectile;
+      const done = inst.t > inst.windup || inst.cancelLeft > 0;
+      const releaseX = u.x + dir * p.offset;
+      const target = done ? void 0 : firstBodyAhead(s, releaseX - dir * p.radius, dir, u.id, p.impact.zone, data);
+      return {
+        ...forecastImpact(p.impact, 1, "projectile", data),
+        source: u.id,
+        action: def.id,
+        name: `${p.name} (${def.name})`,
+        kind: "projectile",
+        ticksUntilActive: done ? null : until,
+        target: target?.id,
+        distance: target ? Math.abs(target.x - u.x) : void 0,
+        playOut: done ? null : playOut(s, u.id, inst.uid, def.id, data)
+      };
+    }
+    return null;
+  }
+  function forecastObject(s, objectId, data) {
+    const o = unitById(s, objectId);
+    if (!o || o.kind !== "object") return null;
+    const p = data.actions[o.char].projectile;
+    const dir = o.dir ?? 1;
+    const target = firstBodyAhead(s, o.x - dir * p.radius, dir, o.owner, p.impact.zone, data);
+    return {
+      ...forecastImpact(p.impact, 1, "projectile", data),
+      source: o.id,
+      action: o.char,
+      name: p.name,
+      kind: "projectile",
+      ticksUntilActive: target ? flightTicks(o.x, target, p.speed, p.radius, data) - 1 : null,
+      target: target?.id,
+      distance: target ? Math.abs(target.x - o.x) : void 0,
+      playOut: playOut(s, o.id, null, o.char, data)
+    };
+  }
+  function playOut(s, source, uid, action, data) {
+    let state = s;
+    let follow = source;
+    let followUid = uid;
+    for (let i = 0; i < 64 && !state.over; i++) {
+      const { state: next, events } = step(state, {}, data);
+      for (const e of events) {
+        if (e.unit !== follow || e.action !== action) continue;
+        const out = { tick: e.tick, target: e.target, damage: e.damage, detail: e.detail };
+        switch (e.type) {
+          case "released":
+            follow = e.target;
+            followUid = null;
+            break;
+          case "hit":
+            return { result: "hit", ...out };
+          case "blocked":
+            return { result: "blocked", ...out };
+          case "grabbed":
+            return { result: "grabbed", ...out };
+          case "parried":
+            return { result: "intercepted", ...out };
+          case "clash":
+            return { result: "clash", ...out };
+          case "whiff":
+            return { result: "missed", ...out };
+          case "impact":
+            return { result: "missed", ...out, detail: "hit the wall" };
+        }
+      }
+      const u = unitById(next, follow);
+      if (!u) return { result: "gone", tick: next.tick };
+      if (followUid !== null && !u.actions.some((x) => x.uid === followUid)) return { result: "interrupted", tick: next.tick };
+      state = next;
+    }
+    return { result: "gone", tick: state.tick };
+  }
+  function firstBodyAhead(s, x, dir, skip, zone, data) {
+    return s.units.filter((v) => isBody(v) && v.id !== skip && (v.x - x) * dir > 0 && !(zone && data && dodges(v, zone, data))).sort((a, b) => (a.x - x) * dir - (b.x - x) * dir)[0];
+  }
+  function distanceAtHit(u, inst, def, target, data) {
+    const total = Math.round((def.move ?? 0) * charOf(u, data).moveMul);
+    const span = inst.windup + inst.active;
+    const hitIdx = Math.max(inst.t, inst.windup);
+    const movedAtHit = span > 0 ? Math.round(total * (Math.min(hitIdx, span - 1) + 1) / span) : 0;
+    return Math.max(data.rules.bodyWidth, Math.abs(target.x - u.x) - (movedAtHit - inst.movedSoFar));
+  }
+  function withinReach(distance, reach) {
+    return distance >= reach[0] - 5 && distance <= reach[1] + 5;
+  }
+  function flightTicks(x, target, speed, radius, data) {
+    const gap = Math.max(0, Math.abs(target.x - x) - data.rules.bodyWidth / 2 - radius);
+    return Math.max(1, Math.ceil(gap / speed));
   }
 
   // src/sim/match.ts
