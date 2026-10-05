@@ -37,7 +37,7 @@ Node 20+. No other runtime dependencies.
 | `src/sim/match.ts` | Runs a match between two controllers. |
 | `src/cli/batch.ts` | Batch simulator CLI. |
 | `src/browser.ts` | What the viewer imports; bundled to `viewer/sim.bundle.js` as the global `TickSim`. |
-| `viewer/index.html` | Box viewer. Single file, vanilla JS, no framework. Jointed figures posed from posture and action phase, eased between ticks; hover a part for its forecast. |
+| `viewer/index.html` | Box viewer. Single file, vanilla JS, no framework. Jointed figures posed from posture and action phase, eased between ticks; hover a part for its forecast. Live matches record every tick for replays; Space commits. |
 | `test/engine.test.ts` | One test per decided rule. |
 | `test/query.test.ts` | Forecasts shown in the viewer match what the engine actually deals. |
 | `test/ai.test.ts` | Every matchup finishes; the reader AI never sends illegal commits. |

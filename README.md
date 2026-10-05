@@ -46,6 +46,8 @@ file, so refresh to see a change. To open the viewer straight from disk instead,
   - **Let the AI command your lion** hands a summon over to the AI.
 - **Two players.** Player 1 commits, then hands over; Player 2 commits; the tick plays out. Each player's picks stay hidden from the other.
 - **Watch AI vs AI.** Step through a match tick by tick, or open a replay saved with `--replay`.
+- **Space** commits (in Two players, it commits for whoever's turn it is; handing over still takes a click). During a replay or while watching, Space plays and pauses.
+- **Replays.** Every tick you play is kept. **Replay the match** plays it back from the first tick with the same animation; a replay started mid-match hands you back to the fight when it catches up. When a match ends, the replay starts on its own after a moment. Untick *Replay automatically when the match ends* to turn that off. *Speed* sets how fast replays (and AI matches) play. Both settings are remembered in this browser.
 
 *Coming at…* lists everything heading for the selected unit: strikes, grabs, throws still being wound up, and objects in flight. For each one it shows when it lands, the damage, and what answers it. Point at any action to read its description.
 

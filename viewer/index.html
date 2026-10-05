@@ -76,6 +76,11 @@ label.file input{position:absolute;inset:0;opacity:0;cursor:pointer}
 .banner{font-weight:600;font-size:15px;padding:4px 10px;border-radius:6px;background:var(--ink);color:var(--bg)}
 .transport{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:0 14px 12px}
 .transport input[type=range]{flex:1;min-width:160px;accent-color:var(--ink)}
+.tcontrols{display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:1 1 360px}
+.speed{grid-auto-flow:column;align-items:center;gap:6px}
+.replay-tag{font-family:var(--font-mono);font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--ink);border-radius:999px;padding:2px 10px}
+kbd{font-family:var(--font-mono);font-size:11px;font-weight:500;border:1px solid currentColor;border-radius:4px;padding:0 4px;margin-left:6px;opacity:.7}
+@media (hover:none){ kbd{display:none} }
 .units{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:14px}
 .fp{padding:12px 14px;display:grid;gap:8px;align-content:start}
 .fp.summon{border-style:dashed}
@@ -173,17 +178,26 @@ label.file input{position:absolute;inset:0;opacity:0;cursor:pointer}
     <div class="arena-top">
       <div class="tick">TICK<b id="tickNum">0</b></div>
       <div id="banner" class="banner hidden"></div>
+      <span id="replayTag" class="replay-tag hidden">Replay</span>
       <span class="point-hint">Point at a limb, or tap it, to see what it's doing and what it would deal.</span>
     </div>
     <svg id="stage" viewBox="150 44 700 260" role="img" aria-label="Arena"></svg>
     <div class="tip" id="tip" role="status" hidden></div>
     <div class="commits" id="commitLine"></div>
-    <div class="transport hidden" id="transport">
-      <button class="btn" id="tFirst">First</button>
-      <button class="btn" id="tPrev">Back</button>
-      <button class="btn primary" id="tPlay">Play</button>
-      <button class="btn" id="tNext">Next</button>
-      <input type="range" id="scrub" min="0" max="0" value="0" aria-label="Scrub through the match">
+    <div class="transport" id="transport">
+      <div class="tcontrols" id="tControls">
+        <button class="btn" id="tFirst">First</button>
+        <button class="btn" id="tPrev">Back</button>
+        <button class="btn primary" id="tPlay" title="Play or pause (Space)">Play</button>
+        <button class="btn" id="tNext">Next</button>
+        <input type="range" id="scrub" min="0" max="0" value="0" aria-label="Scrub through the match">
+      </div>
+      <button class="btn" id="tReplay" title="Play the match back from the first tick">Replay the match</button>
+      <label class="field speed" for="tSpeed">Speed<select id="tSpeed">
+        <option value="520">Slow</option><option value="260">Normal</option><option value="130">Fast</option>
+      </select></label>
+      <label class="auto" id="autoReplayWrap" for="autoReplay"><input type="checkbox" id="autoReplay"> Replay automatically when the match ends</label>
+      <button class="btn primary" id="tExit">Back to the match</button>
     </div>
   </section>
 
@@ -208,7 +222,7 @@ label.file input{position:absolute;inset:0;opacity:0;cursor:pointer}
           <button class="btn" id="hintBtn" title="Fill in what the reader AI would do for this unit">Suggest</button>
           <button class="btn" id="undoBtn" title="Take back the last tick">Undo</button>
           <button class="btn" id="skipBtn">Skip to my turn</button>
-          <button class="btn primary" id="commitBtn">Commit</button>
+          <button class="btn primary" id="commitBtn" title="Commit (Space)">Commit</button>
         </div>
       </div>
     </div>
@@ -239,7 +253,19 @@ const app = {
   turn: 0, pending: null, handover: false,
   frames: null, idx: 0, timer: null, replay: null, names: {},
   hover: null, pinned: false, tipAt: null, tipInfo: null, narrow: false,
+  // Every tick of a live match, for replays: { state, commits, events }.
+  timeline: [], replaying: false, endTimer: null, exitTimer: null,
+  speed: Number(stored('overreach.speed')) || 260, autoReplay: stored('overreach.autoReplay') !== 'off',
 };
+
+/** Per-viewer preferences. Storage can be missing (private windows), so this never throws. */
+function stored(key, value){
+  try {
+    if (value === undefined) return localStorage.getItem(key);
+    localStorage.setItem(key, value);
+  } catch { /* preferences just won't stick */ }
+  return null;
+}
 
 // ---------------------------------------------------------------- names
 
@@ -273,6 +299,8 @@ function resetTurnState(){
 
 function newMatch(){
   stopPlay();
+  clearTimeout(app.endTimer);
+  app.replaying = false;
   app.chars = [$('charA').value, $('charB').value];
   app.ai = $('aiKind').value;
   app.seed = Number($('seed').value) || 0;
@@ -288,6 +316,7 @@ function newMatch(){
     for (const f of app.frames) remember(f.state);
   } else {
     app.state = S.createMatch(app.chars[0], app.chars[1], app.data);
+    app.timeline = [{ state: app.state, commits: {}, events: [] }];
     app.ctrl = S.makeController(app.ai, app.seed);
     app.helper = S.makeController('reader', app.seed + 1000);
     remember(app.state);
@@ -345,6 +374,12 @@ function doStep(commits){
   app.log = res.events.slice().reverse().concat(app.log).slice(0, 300);
   app.sel = {}; app.cancels = {};
   if (!S.unitById(app.state, app.active)) app.active = app.mode === 'hot' && app.turn === 1 ? 'B' : 'A';
+  app.timeline.push({ state: res.state, commits, events: res.events });
+  // Give the knockout a moment on screen, then play the whole match back.
+  if (res.state.over && app.autoReplay) {
+    clearTimeout(app.endTimer);
+    app.endTimer = setTimeout(() => { if (!app.replaying && app.state.over) startReplay(); }, 1600);
+  }
 }
 
 function commitPressed(){
@@ -384,6 +419,8 @@ function finishHotTick(){
 function undo(){
   const last = app.history.pop();
   if (!last) return;
+  clearTimeout(app.endTimer);
+  app.timeline.pop();
   app.state = last.state; app.log = last.log; app.lastCommits = last.lastCommits;
   resetTurnState();
   app.active = 'A';
@@ -412,16 +449,56 @@ function hint(){
 
 // ---------------------------------------------------------------- watch
 
-function currentState(){ return app.mode === 'watch' ? app.frames[app.idx].state : app.state; }
-function stopPlay(){ if (app.timer) clearInterval(app.timer); app.timer = null; $('tPlay').textContent = 'Play'; }
+/** Showing recorded frames (watching AIs, or replaying your own match) rather than a live match. */
+function viewing(){ return app.mode === 'watch' || app.replaying; }
+function currentState(){ return viewing() ? app.frames[app.idx].state : app.state; }
+function stopPlay(){
+  if (app.timer) clearInterval(app.timer);
+  clearTimeout(app.exitTimer);
+  app.timer = null;
+  $('tPlay').textContent = 'Play';
+}
 function goFrame(i){ app.idx = Math.max(0, Math.min(app.frames.length - 1, i)); render(); }
+
+function play(){
+  stopPlay();
+  if (app.idx >= app.frames.length - 1) app.idx = 0;
+  $('tPlay').textContent = 'Pause';
+  app.timer = setInterval(() => {
+    if (app.idx < app.frames.length - 1) { goFrame(app.idx + 1); return; }
+    stopPlay();
+    // A replay of a match still in progress hands you back to it when it catches up.
+    if (app.replaying && !app.state.over) app.exitTimer = setTimeout(exitReplay, 900);
+  }, app.speed);
+  render();
+}
+function togglePlay(){ if (app.timer) stopPlay(); else play(); }
+
+/** Play the live match back from its first tick. */
+function startReplay(){
+  if (app.mode === 'watch' || app.timeline.length < 2) return;
+  clearTimeout(app.endTimer);
+  app.frames = app.timeline;
+  app.idx = 0;
+  app.replaying = true;
+  anim.snap = true;
+  point(null, false);
+  play();
+}
+function exitReplay(){
+  stopPlay();
+  app.replaying = false;
+  anim.snap = true;
+  point(null, false);
+  render();
+}
 
 // ---------------------------------------------------------------- render
 
 function render(){
   const s = currentState();
   const d = app.data;
-  const playing = app.mode !== 'watch';
+  const playing = !viewing();
   $('charALabel').textContent = TEAM_NAMES[app.mode][0][0] === 'You' ? 'You' : app.mode === 'hot' ? 'Player 1' : 'Fighter A';
   $('charBLabel').textContent = app.mode === 'play' ? 'Opponent' : app.mode === 'hot' ? 'Player 2' : 'Fighter B';
   $('aiField').classList.toggle('hidden', app.mode === 'hot');
@@ -441,7 +518,15 @@ function render(){
   const parts = Object.entries(commits || {}).map(([id, c]) => `${label(id)}: ${commitText(c)}`);
   $('commitLine').textContent = s.tick === 0 ? 'Every unit starts free. Commits are revealed when the tick plays out.' :
     `Committed for tick ${s.tick}:  ${parts.length ? parts.join('   ·   ') : 'nothing from anyone'}`;
-  $('transport').classList.toggle('hidden', playing);
+  $('tControls').classList.toggle('hidden', playing);
+  $('tReplay').classList.toggle('hidden', !playing || app.mode === 'watch');
+  $('tReplay').disabled = app.timeline.length < 2;
+  $('autoReplayWrap').classList.toggle('hidden', !playing || app.mode === 'watch');
+  $('autoReplay').checked = app.autoReplay;
+  $('tExit').classList.toggle('hidden', !app.replaying);
+  $('tExit').textContent = app.state && app.state.over ? 'Back to the end' : 'Back to the match';
+  $('replayTag').classList.toggle('hidden', !app.replaying);
+  if (app.replaying) $('replayTag').textContent = `Replay · ${app.idx} / ${app.frames.length - 1}`;
   if (!playing) { $('scrub').max = String(app.frames.length - 1); $('scrub').value = String(app.idx); }
   $('movePanel').classList.toggle('hidden', !playing);
   if (playing) drawCommitPanel(s);
@@ -823,7 +908,7 @@ function stageRender(s){
     anim.from = anim.snap ? new Map() : visualsAt(now);
     anim.to = new Map(s.units.map((u) => [u.id, visualOf(s, u)]));
     anim.t0 = now;
-    anim.dur = anim.snap || reduceMotion.matches || document.hidden ? 0 : TWEEN_MS;
+    anim.dur = anim.snap || reduceMotion.matches || document.hidden ? 0 : app.timer ? Math.max(100, Math.min(420, app.speed * 0.9)) : TWEEN_MS;
     if (anim.snap) anim.pops = [];
     if (forward) addPops(s, now);
     anim.shown = s; anim.shownTick = s.tick; anim.snap = false;
@@ -848,7 +933,7 @@ function frame(){
 
 /** Damage numbers and notes for what happened on the tick just played. */
 function addPops(s, now){
-  const evs = app.mode === 'watch' ? (app.frames[app.idx]?.events || []) : app.log.filter((e) => e.tick === s.tick);
+  const evs = viewing() ? (app.frames[app.idx]?.events || []) : app.log.filter((e) => e.tick === s.tick);
   for (const e of evs) {
     if (e.type === 'hit' || e.type === 'grabbed') anim.pops.push({ t0: now, unit: e.target, zone: e.zone || 'body', text: `−${e.damage}`, kind: 'hit' });
     else if (e.type === 'blocked') anim.pops.push({ t0: now, unit: e.target, zone: e.zone || 'body', text: `−${e.damage} blocked`, kind: 'block' });
@@ -1109,7 +1194,7 @@ function drawCommitPanel(s){
   $('selLine').textContent = s.over ? '' : `Committing  ${picked.join('  ·  ')}`;
   const anyFree = units.some((u) => S.canAct(s, u));
   $('commitBtn').disabled = s.over || hand || !anyFree;
-  $('commitBtn').textContent = app.mode === 'hot' && team === 0 ? 'Commit and hand over' : 'Commit';
+  $('commitBtn').innerHTML = `${app.mode === 'hot' && team === 0 ? 'Commit and hand over' : 'Commit'}<kbd>Space</kbd>`;
   $('hintBtn').disabled = s.over || hand || !free || !!(active && app.auto[active.id]);
   $('undoBtn').disabled = !app.history.length;
   $('skipBtn').classList.toggle('hidden', app.mode !== 'play');
@@ -1378,11 +1463,19 @@ $('tFirst').addEventListener('click', () => { stopPlay(); goFrame(0); });
 $('tPrev').addEventListener('click', () => { stopPlay(); goFrame(app.idx - 1); });
 $('tNext').addEventListener('click', () => { stopPlay(); goFrame(app.idx + 1); });
 $('scrub').addEventListener('input', (e) => { stopPlay(); goFrame(Number(e.target.value)); });
-$('tPlay').addEventListener('click', () => {
-  if (app.timer) { stopPlay(); return; }
-  if (app.idx >= app.frames.length - 1) app.idx = 0;
-  $('tPlay').textContent = 'Pause';
-  app.timer = setInterval(() => { if (app.idx >= app.frames.length - 1) { stopPlay(); return; } goFrame(app.idx + 1); }, 260);
+$('tPlay').addEventListener('click', togglePlay);
+$('tReplay').addEventListener('click', startReplay);
+$('tExit').addEventListener('click', exitReplay);
+$('autoReplay').addEventListener('change', (e) => {
+  app.autoReplay = e.target.checked;
+  stored('overreach.autoReplay', app.autoReplay ? 'on' : 'off');
+  if (!app.autoReplay) clearTimeout(app.endTimer);
+});
+$('tSpeed').value = String(app.speed);
+$('tSpeed').addEventListener('change', (e) => {
+  app.speed = Number(e.target.value) || 260;
+  stored('overreach.speed', String(app.speed));
+  if (app.timer) play();
 });
 $('loadReplay').addEventListener('change', async (e) => {
   const file = e.target.files && e.target.files[0];
@@ -1391,6 +1484,8 @@ $('loadReplay').addEventListener('change', async (e) => {
     const rep = JSON.parse(await file.text());
     if (!rep.frames || !rep.data || !rep.frames[0]?.state?.units) throw new Error('This file is not a replay saved by this version of the simulator.');
     app.mode = 'watch';
+    app.replaying = false;
+    clearTimeout(app.endTimer);
     for (const [id, m] of [['modePlay','play'],['modeHot','hot'],['modeWatch','watch']]) $(id).setAttribute('aria-pressed', String(m === 'watch'));
     app.replay = rep; app.data = rep.data; app.chars = rep.chars; app.frames = rep.frames; app.idx = 0; app.names = {};
     app.hover = null; app.pinned = false; anim.snap = true;
@@ -1416,7 +1511,19 @@ $('stage').addEventListener('click', (e) => {
   const h = pointedAt(e);
   point(h && !(app.pinned && samePoint(h, app.hover)) ? h : null, true);
 });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && app.hover) point(null, false); });
+// Space commits in a live match and plays or pauses a replay. It's left alone while typing in a
+// field, and it overrides a focused button (Enter still presses that), so clicking a move and
+// then pressing Space commits instead of un-picking the move.
+const typing = (t) => !!(t && t.closest && t.closest('input, select, textarea, [contenteditable]'));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && app.hover) point(null, false);
+  if (e.key !== ' ' || e.ctrlKey || e.metaKey || e.altKey || typing(e.target)) return;
+  e.preventDefault();
+  if (e.repeat) return;
+  if (viewing()) togglePlay();
+  else if (!$('commitBtn').disabled) commitPressed();
+});
+document.addEventListener('keyup', (e) => { if (e.key === ' ' && !typing(e.target)) e.preventDefault(); });
 window.addEventListener('resize', () => render());
 // Animation frames stop while the page is hidden; catch up when it's shown again.
 document.addEventListener('visibilitychange', () => { if (!document.hidden) frame(); });
